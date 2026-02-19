@@ -1,0 +1,58 @@
+<Window
+    x:Class="JiraWidget.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="JiraWidget">
+
+    <Window.Resources>
+        <Style x:Key="TitleBarButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Width" Value="32"/>
+            <Setter Property="Height" Value="32"/>
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="AppArea"
+            CornerRadius="12"
+            Background="#222">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32"/> <!-- Title bar area -->
+                <RowDefinition Height="*"/>   <!-- Content area -->
+            </Grid.RowDefinitions>
+
+            <!-- Draggable Title Bar Area -->
+            <Grid x:Name="DragArea" Grid.Row="0">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+                    <Button x:Name="MinimizeButton" Content="—" Click="MinimizeButton_Click" Style="{StaticResource TitleBarButtonStyle}"/>
+                    <Button x:Name="CloseButton" Content="✕" Click="CloseButton_Click" Style="{StaticResource TitleBarButtonStyle}"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Content Area -->
+            <Grid Grid.Row="1" Padding="15,0,15,15">
+
+                <!-- Login View -->
+                <StackPanel x:Name="LoginView" Spacing="10" VerticalAlignment="Center">
+                    <TextBlock Text="Connect to Jira" HorizontalAlignment="Center" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
+                    <TextBox x:Name="JiraUrlTextBox" Header="Jira URL" PlaceholderText="https://your-domain.atlassian.net"/>
+                    <TextBox x:Name="EmailTextBox" Header="Email" PlaceholderText="user@example.com"/>
+                    <TextBox x:Name="ApiTokenTextBox" Header="API Token" PlaceholderText="Your API Token"/>
+                    <TextBox x:Name="JiraIssueTextBox" Header="Issue ID / Key" PlaceholderText="PROJ-123"/>
+                    <Button x:Name="ConnectButton" Content="Connect" Click="ConnectButton_Click" HorizontalAlignment="Center"/>
+                </StackPanel>
+
+                <!-- Ticket View -->
+                <StackPanel x:Name="TicketView" Spacing="10" Visibility="Collapsed">
+                    <TextBlock x:Name="TicketIdTextBlock" Text="PROJ-101" FontSize="18" FontWeight="SemiBold" Foreground="White"/>
+                    <ProgressBar x:Name="TicketProgressBar" Value="65" Height="12"/>
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Border>
+
+</Window>

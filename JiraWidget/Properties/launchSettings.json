@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "JiraWidget (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "JiraWidget (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
