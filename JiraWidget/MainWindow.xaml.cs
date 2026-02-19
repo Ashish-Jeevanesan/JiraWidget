@@ -2,6 +2,9 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System;
+using System.Collections.ObjectModel;
+using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 // To learn more about WinUI, the WinUI project structure,
@@ -9,13 +12,15 @@ using System.Threading.Tasks;
 
 namespace JiraWidget
 {
-    /// <summary>
-    /// An empty window that can be used on its own or navigated to within a Frame.
-    /// </summary>
     public sealed partial class MainWindow : Window
     {
         private AppWindow _appWindow;
         private readonly JiraService _jiraService;
+
+        public ObservableCollection<TrackedIssueViewModel> TrackedIssues { get; } = new();
+
+        private const int MainViewBaseHeight = 140;
+        private const int HeightPerIssue = 60;
 
         public MainWindow()
         {
@@ -26,9 +31,9 @@ namespace JiraWidget
             var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
             var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
             _appWindow = AppWindow.GetFromWindowId(windowId);
+            _appWindow.Title = "JiraWidget";
 
-            _appWindow.Resize(new Windows.Graphics.SizeInt32(300, 280)); // Adjusted height for all fields
-            _appWindow.SetPresenter(AppWindowPresenterKind.Overlapped);
+            _appWindow.Resize(new Windows.Graphics.SizeInt32(300, 240)); 
 
             var presenter = (OverlappedPresenter)_appWindow.Presenter;
             presenter.IsAlwaysOnTop = true;
@@ -37,6 +42,11 @@ namespace JiraWidget
             presenter.SetBorderAndTitleBar(false, false);
 
             _jiraService = new JiraService();
+            TrackedIssuesItemsControl.ItemsSource = TrackedIssues;
+
+            // Pre-populate for development
+            JiraUrlTextBox.Text = "https://jira.globusmedical.com/";
+            PatTextBox.Text = "";
         }
 
         private void MinimizeButton_Click(object sender, RoutedEventArgs e)
@@ -52,50 +62,101 @@ namespace JiraWidget
             this.Close();
         }
 
-        private async void ConnectButton_Click(object sender, RoutedEventArgs e)
+        private void ConnectButton_Click(object sender, RoutedEventArgs e)
         {
-            if (string.IsNullOrWhiteSpace(JiraUrlTextBox.Text) ||
-                string.IsNullOrWhiteSpace(EmailTextBox.Text) ||
-                string.IsNullOrWhiteSpace(ApiTokenTextBox.Text) ||
-                string.IsNullOrWhiteSpace(JiraIssueTextBox.Text))
+            if (string.IsNullOrWhiteSpace(JiraUrlTextBox.Text) || string.IsNullOrWhiteSpace(PatTextBox.Text))
             {
-                await ShowErrorDialog("Please fill in all fields.");
+                _ = ShowErrorDialog("Please fill in all fields.");
                 return;
             }
 
-            ConnectButton.IsEnabled = false;
-            ConnectButton.Content = "Connecting...";
+            _jiraService.SetupClient(JiraUrlTextBox.Text, PatTextBox.Text);
 
-            bool isConnected = await _jiraService.ConnectAsync(JiraUrlTextBox.Text, EmailTextBox.Text, ApiTokenTextBox.Text);
+            // Switch to the main view
+            LoginView.Visibility = Visibility.Collapsed;
+            MainView.Visibility = Visibility.Visible;
+            AdjustWindowHeight();
+        }
+        
+        private void TrackButton_Click(object sender, RoutedEventArgs e)
+        {
+            var issueKey = IssueKeyTextBox.Text.Trim().ToUpper();
 
-            if (isConnected)
+            // 1. Validation
+            if (!Regex.IsMatch(issueKey, @"^PC-\d+$"))
             {
-                var issueKey = JiraIssueTextBox.Text;
-                var issue = await _jiraService.GetIssueAsync(issueKey);
+                _ = ShowErrorDialog("Invalid format. Please use PC-XXXXX format.");
+                return;
+            }
 
-                if (issue != null)
-                {
-                    // Success! Switch view and update UI
-                    LoginView.Visibility = Visibility.Collapsed;
-                    TicketView.Visibility = Visibility.Visible;
-                    _appWindow.Resize(new Windows.Graphics.SizeInt32(300, 120));
+            // 2. Check for duplicates
+            if (TrackedIssues.Any(i => i.IssueKey == issueKey))
+            {
+                _ = ShowErrorDialog("This issue is already being tracked.");
+                return;
+            }
 
-                    TicketIdTextBlock.Text = issue.Key;
-                    TicketProgressBar.Value = issue.Fields?.Progress?.Percent ?? 0;
-                }
-                else
-                {
-                    await ShowErrorDialog($"Could not find or access Jira issue '{issueKey}'. Please check the ID and your permissions.");
-                    ConnectButton.IsEnabled = true;
-                    ConnectButton.Content = "Connect";
-                }
+            // 3. Add to collection
+            var newIssueViewModel = new TrackedIssueViewModel { DisplayText = issueKey, StatusText = "Loading..." };
+            TrackedIssues.Add(newIssueViewModel);
+            AdjustWindowHeight();
+
+            // 4. Fetch data asynchronously
+            _ = FetchIssueDetails(newIssueViewModel);
+
+            // 5. Clear input
+            IssueKeyTextBox.Text = "";
+        }
+        
+        private async Task FetchIssueDetails(TrackedIssueViewModel issueViewModel)
+        {
+            var (issue, errorMessage) = await _jiraService.GetIssueAsync(issueViewModel.IssueKey);
+
+            if (issue != null)
+            {
+                var activityLinks = issue.Fields?.IssueLinks?
+                    .Where(link => link.Type?.Name == "Activities" && link.OutwardIssue?.Fields?.Status != null)
+                    .ToList();
+        
+                var total = activityLinks?.Count ?? 0;
+                var done = activityLinks?.Count(link => link.OutwardIssue!.Fields!.Status!.Name == "Done") ?? 0;
+                var percentage = (total == 0) ? 0 : (int)((double)done / total * 100);
+
+                issueViewModel.Progress = percentage;
+                issueViewModel.DisplayText = $"{issueViewModel.IssueKey} ({done}/{total} Done)";
+                issueViewModel.StatusText = "Loaded";
             }
             else
             {
-                await ShowErrorDialog("Failed to connect to Jira. Please check your URL, email, and API token.");
-                ConnectButton.IsEnabled = true;
-                ConnectButton.Content = "Connect";
+                issueViewModel.StatusText = "Error";
+                issueViewModel.Progress = 0;
+                issueViewModel.DisplayText = $"{issueViewModel.IssueKey} ({errorMessage ?? "Not Found"})";
             }
+        }
+
+        private void RemoveButton_Click(object sender, RoutedEventArgs e)
+        {
+            if ((sender as FrameworkElement)?.DataContext is TrackedIssueViewModel issueToRemove)
+            {
+                TrackedIssues.Remove(issueToRemove);
+                AdjustWindowHeight();
+            }
+        }
+
+        private void LogoutButton_Click(object sender, RoutedEventArgs e)
+        {
+            _jiraService.Disconnect();
+            TrackedIssues.Clear();
+            
+            MainView.Visibility = Visibility.Collapsed;
+            LoginView.Visibility = Visibility.Visible;
+            _appWindow.Resize(new Windows.Graphics.SizeInt32(300, 240));
+        }
+
+        private void AdjustWindowHeight()
+        {
+            var newHeight = MainViewBaseHeight + (TrackedIssues.Count * HeightPerIssue);
+            _appWindow.Resize(new Windows.Graphics.SizeInt32(300, newHeight));
         }
 
         private async Task ShowErrorDialog(string message)
