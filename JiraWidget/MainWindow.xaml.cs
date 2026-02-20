@@ -19,8 +19,12 @@ namespace JiraWidget
 
         public ObservableCollection<TrackedIssueViewModel> TrackedIssues { get; } = new();
 
-        private const int MainViewBaseHeight = 140;
-        private const int HeightPerIssue = 60;
+        private const int LoginHeight = 240;
+        private const int MainViewBaseHeight = 160;
+        private const int HeightPerIssue = 58;
+        private const int MaxMainHeight = 640;
+        private const int MinWindowWidth = 340;
+        private const int MaxWindowWidth = 520;
 
         public MainWindow()
         {
@@ -33,7 +37,7 @@ namespace JiraWidget
             _appWindow = AppWindow.GetFromWindowId(windowId);
             _appWindow.Title = "JiraWidget";
 
-            _appWindow.Resize(new Windows.Graphics.SizeInt32(300, 240)); 
+            _appWindow.Resize(new Windows.Graphics.SizeInt32(MinWindowWidth, LoginHeight));
 
             var presenter = (OverlappedPresenter)_appWindow.Presenter;
             presenter.IsAlwaysOnTop = true;
@@ -47,6 +51,8 @@ namespace JiraWidget
             // Pre-populate for development
             JiraUrlTextBox.Text = "https://jira.globusmedical.com/";
             PatTextBox.Text = "";
+
+            AppLogger.Info("Main window initialized.");
         }
 
         private void MinimizeButton_Click(object sender, RoutedEventArgs e)
@@ -62,7 +68,7 @@ namespace JiraWidget
             this.Close();
         }
 
-        private void ConnectButton_Click(object sender, RoutedEventArgs e)
+        private async void ConnectButton_Click(object sender, RoutedEventArgs e)
         {
             if (string.IsNullOrWhiteSpace(JiraUrlTextBox.Text) || string.IsNullOrWhiteSpace(PatTextBox.Text))
             {
@@ -70,67 +76,95 @@ namespace JiraWidget
                 return;
             }
 
-            _jiraService.SetupClient(JiraUrlTextBox.Text, PatTextBox.Text);
+            try
+            {
+                _jiraService.SetupClient(JiraUrlTextBox.Text, PatTextBox.Text);
 
-            // Switch to the main view
-            LoginView.Visibility = Visibility.Collapsed;
-            MainView.Visibility = Visibility.Visible;
-            AdjustWindowHeight();
+                var (isConnected, errorMessage) = await _jiraService.ValidateConnectionAsync();
+                if (!isConnected)
+                {
+                    await ShowErrorDialog($"Login failed. {errorMessage ?? "Please verify Jira URL and token."}");
+                    return;
+                }
+
+                LoginView.Visibility = Visibility.Collapsed;
+                MainView.Visibility = Visibility.Visible;
+                AdjustWindowSize();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Unhandled exception in ConnectButton_Click.", ex);
+                await ShowErrorDialog($"Unexpected error during login. Check log: {AppLogger.LogPath}");
+            }
         }
-        
+
         private void TrackButton_Click(object sender, RoutedEventArgs e)
         {
             var issueKey = IssueKeyTextBox.Text.Trim().ToUpper();
 
-            // 1. Validation
             if (!Regex.IsMatch(issueKey, @"^PC-\d+$"))
             {
                 _ = ShowErrorDialog("Invalid format. Please use PC-XXXXX format.");
                 return;
             }
 
-            // 2. Check for duplicates
             if (TrackedIssues.Any(i => i.IssueKey == issueKey))
             {
                 _ = ShowErrorDialog("This issue is already being tracked.");
                 return;
             }
 
-            // 3. Add to collection
-            var newIssueViewModel = new TrackedIssueViewModel { DisplayText = issueKey, StatusText = "Loading..." };
-            TrackedIssues.Add(newIssueViewModel);
-            AdjustWindowHeight();
+            var newIssueViewModel = new TrackedIssueViewModel
+            {
+                IssueKey = issueKey,
+                DisplayText = issueKey,
+                StatusText = "Loading..."
+            };
 
-            // 4. Fetch data asynchronously
+            TrackedIssues.Add(newIssueViewModel);
+            AdjustWindowSize();
+
             _ = FetchIssueDetails(newIssueViewModel);
 
-            // 5. Clear input
             IssueKeyTextBox.Text = "";
+            AppLogger.Info($"Added issue '{issueKey}' to tracked list.");
         }
-        
+
         private async Task FetchIssueDetails(TrackedIssueViewModel issueViewModel)
         {
-            var (issue, errorMessage) = await _jiraService.GetIssueAsync(issueViewModel.IssueKey);
-
-            if (issue != null)
+            try
             {
-                var activityLinks = issue.Fields?.IssueLinks?
-                    .Where(link => link.Type?.Name == "Activities" && link.OutwardIssue?.Fields?.Status != null)
-                    .ToList();
-        
-                var total = activityLinks?.Count ?? 0;
-                var done = activityLinks?.Count(link => link.OutwardIssue!.Fields!.Status!.Name == "Done") ?? 0;
-                var percentage = (total == 0) ? 0 : (int)((double)done / total * 100);
+                var (issue, errorMessage) = await _jiraService.GetIssueAsync(issueViewModel.IssueKey);
 
-                issueViewModel.Progress = percentage;
-                issueViewModel.DisplayText = $"{issueViewModel.IssueKey} ({done}/{total} Done)";
-                issueViewModel.StatusText = "Loaded";
+                if (issue != null)
+                {
+                    var activityLinks = issue.Fields?.IssueLinks?
+                        .Where(link => link.Type?.Name == "Activities" && link.OutwardIssue?.Fields?.Status != null)
+                        .ToList();
+
+                    var total = activityLinks?.Count ?? 0;
+                    var done = activityLinks?.Count(link => link.OutwardIssue!.Fields!.Status!.Name == "Done") ?? 0;
+                    var percentage = (total == 0) ? 0 : (int)((double)done / total * 100);
+
+                    issueViewModel.Progress = percentage;
+                    issueViewModel.DisplayText = $"{issueViewModel.IssueKey} ({done}/{total} Done)";
+                    issueViewModel.StatusText = "Loaded";
+                    AdjustWindowSize();
+                }
+                else
+                {
+                    issueViewModel.StatusText = "Error";
+                    issueViewModel.Progress = 0;
+                    issueViewModel.DisplayText = $"{issueViewModel.IssueKey} ({errorMessage ?? "Not Found"})";
+                    AdjustWindowSize();
+                }
             }
-            else
+            catch (Exception ex)
             {
+                AppLogger.Error($"Unhandled exception while loading '{issueViewModel.IssueKey}'.", ex);
                 issueViewModel.StatusText = "Error";
-                issueViewModel.Progress = 0;
-                issueViewModel.DisplayText = $"{issueViewModel.IssueKey} ({errorMessage ?? "Not Found"})";
+                issueViewModel.DisplayText = $"{issueViewModel.IssueKey} (Exception - check log)";
+                AdjustWindowSize();
             }
         }
 
@@ -139,7 +173,8 @@ namespace JiraWidget
             if ((sender as FrameworkElement)?.DataContext is TrackedIssueViewModel issueToRemove)
             {
                 TrackedIssues.Remove(issueToRemove);
-                AdjustWindowHeight();
+                AdjustWindowSize();
+                AppLogger.Info($"Removed issue '{issueToRemove.IssueKey}' from tracked list.");
             }
         }
 
@@ -147,16 +182,30 @@ namespace JiraWidget
         {
             _jiraService.Disconnect();
             TrackedIssues.Clear();
-            
+
             MainView.Visibility = Visibility.Collapsed;
             LoginView.Visibility = Visibility.Visible;
-            _appWindow.Resize(new Windows.Graphics.SizeInt32(300, 240));
+            _appWindow.Resize(new Windows.Graphics.SizeInt32(MinWindowWidth, LoginHeight));
+            AppLogger.Info("Logged out and returned to login view.");
         }
 
-        private void AdjustWindowHeight()
+        private void AdjustWindowSize()
         {
             var newHeight = MainViewBaseHeight + (TrackedIssues.Count * HeightPerIssue);
-            _appWindow.Resize(new Windows.Graphics.SizeInt32(300, newHeight));
+            if (newHeight > MaxMainHeight)
+            {
+                newHeight = MaxMainHeight;
+            }
+
+            var longestDisplayLength = TrackedIssues
+                .Select(issue => issue.DisplayText?.Length ?? issue.IssueKey.Length)
+                .DefaultIfEmpty(0)
+                .Max();
+
+            var contentWidth = MinWindowWidth + (longestDisplayLength * 3);
+            var boundedWidth = Math.Clamp(contentWidth, MinWindowWidth, MaxWindowWidth);
+
+            _appWindow.Resize(new Windows.Graphics.SizeInt32(boundedWidth, newHeight));
         }
 
         private async Task ShowErrorDialog(string message)
