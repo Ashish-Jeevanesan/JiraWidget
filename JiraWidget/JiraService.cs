@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net;
@@ -22,9 +23,24 @@ namespace JiraWidget
                 _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pat.Trim());
             }
-            catch (Exception)
+
+            try
             {
-                // Errors will be caught when an actual API call is made.
+                var response = await _httpClient.GetAsync("/rest/api/3/myself");
+                if (response.IsSuccessStatusCode)
+                {
+                    AppLogger.Info("Jira connection validation succeeded.");
+                    return (true, null);
+                }
+
+                var error = await BuildErrorMessageAsync(response);
+                AppLogger.Error($"Jira connection validation failed: {error}");
+                return (false, error);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Exception during Jira connection validation.", ex);
+                return (false, $"Exception: {ex.Message}");
             }
         }
 
@@ -74,6 +90,7 @@ namespace JiraWidget
             }
             catch (Exception ex)
             {
+                AppLogger.Error($"Exception while fetching issue '{issueKey}'.", ex);
                 return (null, $"Exception: {ex.Message}");
             }
         }
@@ -119,13 +136,14 @@ namespace JiraWidget
             }
 
             var doneCount = activityLinks.Count(link => link.OutwardIssue!.Fields!.Status!.Name == "Done");
-            
             return (int)((double)doneCount / activityLinks.Count * 100);
         }
+
         public void Disconnect()
         {
             _httpClient?.Dispose();
             _httpClient = null;
+            AppLogger.Info("Disconnected Jira client.");
         }
     }
 }
