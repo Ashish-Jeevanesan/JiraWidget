@@ -3,7 +3,6 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Net;
 using System.Text.Json;
 using System.Threading.Tasks;
 
@@ -104,7 +103,7 @@ namespace JiraWidget
                     AppLogger.Error($"Issue lookup redirected for '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, Location={location}");
                     return (null, "Request was redirected to a login page (Okta/SSO). This Jira endpoint requires session/OAuth auth rather than the current token.");
                 }
-                var response = await _httpClient.GetAsync($"/rest/api/3/issue/{encodedIssueKey}?fields=summary,status,issuelinks");
+                response = await _httpClient.GetAsync($"/rest/api/3/issue/{encodedIssueKey}?fields=summary,status,issuelinks");
 
                 if (response.IsSuccessStatusCode)
                 {
