@@ -21,12 +21,12 @@ namespace JiraWidget
 
         public ObservableCollection<TrackedIssueViewModel> TrackedIssues { get; } = new();
 
-        private const int LoginHeight = 260;
+        private const int LoginHeight = 240;
         private const int MainViewBaseHeight = 160;
         private const int HeightPerIssue = 58;
-        private const int MaxMainHeight = 700;
+        private const int MaxMainHeight = 640;
         private const int MinWindowWidth = 340;
-        private const int MaxAutoWindowWidth = 640;
+        private const int MaxWindowWidth = 520;
 
         public MainWindow()
         {
@@ -105,79 +105,29 @@ namespace JiraWidget
 
             try
             {
-                var baseUrl = JiraUrlTextBox.Text.Trim();
-                var webView = new WebView2
-                {
-                    Width = 820,
-                    Height = 560
-                };
-
-                await webView.EnsureCoreWebView2Async();
-
-                var loginUrl = $"{baseUrl.TrimEnd('/')}/login.jsp?os_destination=%2Frest%2Fapi%2F3%2Fmyself";
-                webView.Source = new Uri(loginUrl);
-
-                var dialog = new ContentDialog
-                {
-                    Title = "Okta / SSO Login",
-                    Content = webView,
-                    PrimaryButtonText = "Use this session",
-                    CloseButtonText = "Cancel",
-                    DefaultButton = ContentDialogButton.Primary,
-                    XamlRoot = Content.XamlRoot
-                };
-
-                var result = await dialog.ShowAsync();
-                if (result != ContentDialogResult.Primary)
-                {
-                    AppLogger.Info("User cancelled Okta browser login dialog.");
-                    return;
-                }
-
-                var cookies = await webView.CoreWebView2.CookieManager.GetCookiesAsync(baseUrl);
-                var mappedCookies = cookies.Select(MapCookie).ToList();
-
-                var (isConfigured, setupError) = _jiraService.SetupSessionClient(baseUrl, mappedCookies);
+                var (isConfigured, setupError) = _jiraService.SetupClient(JiraUrlTextBox.Text, PatTextBox.Text);
                 if (!isConfigured)
                 {
-                    await ShowErrorDialog($"Failed to use browser session. {setupError}");
+                    await ShowErrorDialog($"Login failed during client setup. {setupError}");
                     return;
                 }
 
-                await ValidateAndEnterMainViewAsync("Please complete Okta login in the browser popup and try again.");
+                var (isConnected, errorMessage) = await _jiraService.ValidateConnectionAsync();
+                if (!isConnected)
+                {
+                    await ShowErrorDialog($"Login failed. {errorMessage ?? "Please verify Jira URL and token."}");
+                    return;
+                }
+
+                LoginView.Visibility = Visibility.Collapsed;
+                MainView.Visibility = Visibility.Visible;
+                AdjustWindowSize();
             }
             catch (Exception ex)
             {
-                AppLogger.Error("Unhandled exception in OktaLoginButton_Click.", ex);
-                await ShowErrorDialog($"Failed to complete Okta login. Check log: {AppLogger.LogPath}");
+                AppLogger.Error("Unhandled exception in ConnectButton_Click.", ex);
+                await ShowErrorDialog($"Unexpected error during login. Check log: {AppLogger.LogPath}");
             }
-        }
-
-        private static JiraSessionCookie MapCookie(CoreWebView2Cookie cookie)
-        {
-            return new JiraSessionCookie
-            {
-                Name = cookie.Name,
-                Value = cookie.Value,
-                Domain = cookie.Domain,
-                Path = cookie.Path,
-                IsHttpOnly = cookie.IsHttpOnly,
-                IsSecure = cookie.IsSecure
-            };
-        }
-
-        private async Task ValidateAndEnterMainViewAsync(string fallbackError)
-        {
-            var (isConnected, errorMessage) = await _jiraService.ValidateConnectionAsync();
-            if (!isConnected)
-            {
-                await ShowErrorDialog($"Login failed. {errorMessage ?? fallbackError}");
-                return;
-            }
-
-            LoginView.Visibility = Visibility.Collapsed;
-            MainView.Visibility = Visibility.Visible;
-            AdjustWindowSize();
         }
 
         private void TrackButton_Click(object sender, RoutedEventArgs e)
@@ -205,6 +155,7 @@ namespace JiraWidget
 
             TrackedIssues.Add(newIssueViewModel);
             AdjustWindowSize();
+
             _ = FetchIssueDetails(newIssueViewModel);
 
             IssueKeyTextBox.Text = "";
@@ -225,20 +176,20 @@ namespace JiraWidget
 
                     var total = activityLinks?.Count ?? 0;
                     var done = activityLinks?.Count(link => link.OutwardIssue!.Fields!.Status!.Name == "Done") ?? 0;
-                    var percentage = total == 0 ? 0 : (int)((double)done / total * 100);
+                    var percentage = (total == 0) ? 0 : (int)((double)done / total * 100);
 
                     issueViewModel.Progress = percentage;
                     issueViewModel.DisplayText = $"{issueViewModel.IssueKey} ({done}/{total} Done)";
                     issueViewModel.StatusText = "Loaded";
+                    AdjustWindowSize();
                 }
                 else
                 {
                     issueViewModel.StatusText = "Error";
                     issueViewModel.Progress = 0;
                     issueViewModel.DisplayText = $"{issueViewModel.IssueKey} ({errorMessage ?? "Not Found"})";
+                    AdjustWindowSize();
                 }
-
-                AdjustWindowSize();
             }
             catch (Exception ex)
             {
@@ -266,25 +217,27 @@ namespace JiraWidget
 
             MainView.Visibility = Visibility.Collapsed;
             LoginView.Visibility = Visibility.Visible;
-
-            var currentWidth = Math.Max(_appWindow.Size.Width, MinWindowWidth);
-            _appWindow.Resize(new Windows.Graphics.SizeInt32(currentWidth, LoginHeight));
+            _appWindow.Resize(new Windows.Graphics.SizeInt32(MinWindowWidth, LoginHeight));
             AppLogger.Info("Logged out and returned to login view.");
         }
 
         private void AdjustWindowSize()
         {
-            var newHeight = Math.Min(MainViewBaseHeight + (TrackedIssues.Count * HeightPerIssue), MaxMainHeight);
+            var newHeight = MainViewBaseHeight + (TrackedIssues.Count * HeightPerIssue);
+            if (newHeight > MaxMainHeight)
+            {
+                newHeight = MaxMainHeight;
+            }
 
             var longestDisplayLength = TrackedIssues
                 .Select(issue => issue.DisplayText?.Length ?? issue.IssueKey.Length)
                 .DefaultIfEmpty(0)
                 .Max();
 
-            var autoWidth = Math.Clamp(MinWindowWidth + (longestDisplayLength * 3), MinWindowWidth, MaxAutoWindowWidth);
-            var finalWidth = Math.Max(_appWindow.Size.Width, autoWidth);
+            var contentWidth = MinWindowWidth + (longestDisplayLength * 3);
+            var boundedWidth = Math.Clamp(contentWidth, MinWindowWidth, MaxWindowWidth);
 
-            _appWindow.Resize(new Windows.Graphics.SizeInt32(finalWidth, newHeight));
+            _appWindow.Resize(new Windows.Graphics.SizeInt32(boundedWidth, newHeight));
         }
 
         private async Task ShowErrorDialog(string message)

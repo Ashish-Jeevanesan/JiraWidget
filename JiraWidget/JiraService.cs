@@ -19,83 +19,24 @@ namespace JiraWidget
             {
                 var handler = new HttpClientHandler
                 {
-                    AllowAutoRedirect = false,
-                    UseCookies = false
+                    AllowAutoRedirect = false
                 };
 
-                _httpClient = CreateClient(handler, baseUrl);
+                _httpClient = new HttpClient(handler);
+                _httpClient.BaseAddress = new Uri(baseUrl);
+                _httpClient.DefaultRequestHeaders.Accept.Clear();
+                _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pat.Trim());
 
-                AppLogger.Info($"Configured Jira client for '{baseUrl}' with PAT auth.");
+                AppLogger.Info($"Configured Jira client for '{baseUrl}' with auto-redirect disabled.");
+                AppLogger.Info($"Configured Jira client for '{baseUrl}'.");
                 return (true, null);
             }
             catch (Exception ex)
             {
-                AppLogger.Error("Failed to configure PAT Jira client.", ex);
+                AppLogger.Error("Failed to configure Jira client.", ex);
                 return (false, ex.Message);
             }
-        }
-
-        public (bool isConfigured, string? errorMessage) SetupSessionClient(string baseUrl, IReadOnlyList<JiraSessionCookie> cookies)
-        {
-            try
-            {
-                var cookieContainer = new CookieContainer();
-                var baseUri = new Uri(baseUrl);
-
-                foreach (var sessionCookie in cookies)
-                {
-                    if (string.IsNullOrWhiteSpace(sessionCookie.Name))
-                    {
-                        continue;
-                    }
-
-                    var cookie = new Cookie(sessionCookie.Name, sessionCookie.Value, sessionCookie.Path, NormalizeDomain(sessionCookie.Domain, baseUri.Host))
-                    {
-                        HttpOnly = sessionCookie.IsHttpOnly,
-                        Secure = sessionCookie.IsSecure
-                    };
-
-                    cookieContainer.Add(baseUri, cookie);
-                }
-
-                var handler = new HttpClientHandler
-                {
-                    AllowAutoRedirect = true,
-                    UseCookies = true,
-                    CookieContainer = cookieContainer
-                };
-
-                _httpClient = CreateClient(handler, baseUrl);
-                AppLogger.Info($"Configured Jira client for '{baseUrl}' using browser session cookies ({cookies.Count} cookies).");
-                return (true, null);
-            }
-            catch (Exception ex)
-            {
-                AppLogger.Error("Failed to configure session Jira client.", ex);
-                return (false, ex.Message);
-            }
-        }
-
-        private static HttpClient CreateClient(HttpMessageHandler handler, string baseUrl)
-        {
-            var client = new HttpClient(handler)
-            {
-                BaseAddress = new Uri(baseUrl)
-            };
-            client.DefaultRequestHeaders.Accept.Clear();
-            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            return client;
-        }
-
-        private static string NormalizeDomain(string cookieDomain, string fallbackHost)
-        {
-            if (string.IsNullOrWhiteSpace(cookieDomain))
-            {
-                return fallbackHost;
-            }
-
-            return cookieDomain.TrimStart('.');
         }
 
         public async Task<(bool isConnected, string? errorMessage)> ValidateConnectionAsync()
@@ -118,7 +59,7 @@ namespace JiraWidget
                 {
                     var location = response.Headers.Location?.ToString() ?? "<unknown>";
                     AppLogger.Error($"Connection validation redirected. Status={(int)response.StatusCode}, Location={location}");
-                    return (false, "Authentication was redirected to a login page (likely Okta/SSO). Use 'Login with Okta (browser)' to establish a session.");
+                    return (false, "Authentication was redirected to a login page (likely Okta/SSO). API token-based access is not valid for this flow.");
                 }
 
                 var error = await BuildErrorMessageAsync(response);
@@ -161,8 +102,9 @@ namespace JiraWidget
                 {
                     var location = response.Headers.Location?.ToString() ?? "<unknown>";
                     AppLogger.Error($"Issue lookup redirected for '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, Location={location}");
-                    return (null, "Request was redirected to a login page (Okta/SSO). Complete browser login and try again.");
+                    return (null, "Request was redirected to a login page (Okta/SSO). This Jira endpoint requires session/OAuth auth rather than the current token.");
                 }
+                response = await _httpClient.GetAsync($"/rest/api/3/issue/{encodedIssueKey}?fields=summary,status,issuelinks");
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -173,7 +115,8 @@ namespace JiraWidget
                         var snippet = GetSnippet(body);
                         var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
                         AppLogger.Error($"Non-JSON success response for issue '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
-                        return (null, "Received non-JSON response from Jira (likely SSO/permission page). Please login with Okta browser flow.");
+                        AppLogger.Error($"Non-JSON success response for issue '{issueKey}'. Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
+                        return (null, "Received non-JSON response from Jira (likely SSO/permission HTML page). Please verify Jira API access for this issue.");
                     }
 
                     try
@@ -184,17 +127,20 @@ namespace JiraWidget
                     catch (JsonException ex)
                     {
                         AppLogger.Error($"Failed to parse Jira issue response for '{issueKey}' (api/{apiVersion}). Snippet={GetSnippet(body)}", ex);
+                        AppLogger.Error($"Failed to parse Jira issue response for '{issueKey}'. Snippet={GetSnippet(body)}", ex);
                         return (null, "Jira returned an unexpected response format.");
                     }
                 }
 
                 var error = await BuildErrorMessageAsync(response);
                 AppLogger.Error($"Issue lookup failed for '{issueKey}' (api/{apiVersion}): {error}");
+                AppLogger.Error($"Issue lookup failed for '{issueKey}': {error}");
                 return (null, error);
             }
             catch (Exception ex)
             {
                 AppLogger.Error($"Exception while fetching issue '{issueKey}' (api/{apiVersion}).", ex);
+                AppLogger.Error($"Exception while fetching issue '{issueKey}'.", ex);
                 return (null, $"Exception: {ex.Message}");
             }
         }
