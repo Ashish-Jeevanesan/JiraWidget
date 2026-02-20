@@ -11,7 +11,7 @@ namespace JiraWidget
     {
         private static HttpClient? _httpClient;
 
-        public void SetupClient(string baseUrl, string pat)
+        public (bool isConfigured, string? errorMessage) SetupClient(string baseUrl, string pat)
         {
             try
             {
@@ -19,11 +19,42 @@ namespace JiraWidget
                 _httpClient.BaseAddress = new Uri(baseUrl);
                 _httpClient.DefaultRequestHeaders.Accept.Clear();
                 _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pat);
+                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pat.Trim());
+
+                AppLogger.Info($"Configured Jira client for '{baseUrl}'.");
+                return (true, null);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Errors will be caught when an actual API call is made.
+                AppLogger.Error("Failed to configure Jira client.", ex);
+                return (false, ex.Message);
+            }
+        }
+
+        public async Task<(bool isConnected, string? errorMessage)> ValidateConnectionAsync()
+        {
+            if (_httpClient == null)
+            {
+                return (false, "Not connected.");
+            }
+
+            try
+            {
+                var response = await _httpClient.GetAsync("/rest/api/3/myself");
+                if (response.IsSuccessStatusCode)
+                {
+                    AppLogger.Info("Jira connection validation succeeded.");
+                    return (true, null);
+                }
+
+                var error = await BuildErrorMessageAsync(response);
+                AppLogger.Error($"Jira connection validation failed: {error}");
+                return (false, error);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Exception during Jira connection validation.", ex);
+                return (false, $"Exception: {ex.Message}");
             }
         }
 
@@ -36,34 +67,104 @@ namespace JiraWidget
 
             try
             {
-                // Using POST to the /search endpoint with JQL.
-                var jql = $"key = '{issueKey}'";
-                var jsonBody = $"{{\"jql\":\"{jql}\",\"fields\":[\"summary\",\"status\",\"issuelinks\"]}}";
-                var content = new StringContent(jsonBody, System.Text.Encoding.UTF8, "application/json");
-                var response = await _httpClient.PostAsync("/rest/api/2/search", content);
+                var encodedIssueKey = Uri.EscapeDataString(issueKey);
+                var response = await _httpClient.GetAsync($"/rest/api/3/issue/{encodedIssueKey}?fields=summary,status,issuelinks");
 
                 if (response.IsSuccessStatusCode)
                 {
-                    var jsonString = await response.Content.ReadAsStringAsync();
-                    var searchResult = JsonSerializer.Deserialize<JiraSearchResult>(jsonString);
-                    var issue = searchResult?.Issues?.FirstOrDefault();
-                    if (issue == null)
+                    var body = await response.Content.ReadAsStringAsync();
+
+                    if (!LooksLikeJson(response, body))
                     {
-                        return (null, "Issue not found via search.");
+                        var snippet = GetSnippet(body);
+                        var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
+                        AppLogger.Error($"Non-JSON success response for issue '{issueKey}'. Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
+                        return (null, "Received non-JSON response from Jira (likely SSO/permission HTML page). Please verify Jira API access for this issue.");
                     }
-                    return (issue, null);
+
+                    try
+                    {
+                        var issue = JsonSerializer.Deserialize<JiraIssue>(body);
+                        return issue == null ? (null, "Issue not found.") : (issue, null);
+                    }
+                    catch (JsonException ex)
+                    {
+                        AppLogger.Error($"Failed to parse Jira issue response for '{issueKey}'. Snippet={GetSnippet(body)}", ex);
+                        return (null, "Jira returned an unexpected response format.");
+                    }
                 }
-                else
-                {
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    return (null, $"{(int)response.StatusCode}: {response.ReasonPhrase}");
-                }
+
+                var error = await BuildErrorMessageAsync(response);
+                AppLogger.Error($"Issue lookup failed for '{issueKey}': {error}");
+                return (null, error);
             }
             catch (Exception ex)
             {
+                AppLogger.Error($"Exception while fetching issue '{issueKey}'.", ex);
                 return (null, $"Exception: {ex.Message}");
             }
         }
+
+        private static async Task<string> BuildErrorMessageAsync(HttpResponseMessage response)
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                if (!LooksLikeJson(response, body))
+                {
+                    var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
+                    AppLogger.Error($"Non-JSON error response. Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={GetSnippet(body)}");
+                    return $"{(int)response.StatusCode}: Jira returned an HTML/non-JSON response (possible SSO redirect or access page).";
+                }
+
+                try
+                {
+                    var jiraError = JsonSerializer.Deserialize<JiraErrorResponse>(body);
+                    var parsedError = jiraError?.ErrorMessages?.FirstOrDefault()
+                        ?? jiraError?.Errors?.Values.FirstOrDefault();
+
+                    if (!string.IsNullOrWhiteSpace(parsedError))
+                    {
+                        return $"{(int)response.StatusCode}: {parsedError}";
+                    }
+                }
+                catch (JsonException ex)
+                {
+                    AppLogger.Error($"Failed to parse Jira error response. Snippet={GetSnippet(body)}", ex);
+                }
+            }
+
+            return $"{(int)response.StatusCode}: {response.ReasonPhrase}";
+        }
+
+        private static bool LooksLikeJson(HttpResponseMessage response, string body)
+        {
+            var contentType = response.Content.Headers.ContentType?.MediaType;
+            if (!string.IsNullOrWhiteSpace(contentType) && contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var trimmed = body.TrimStart();
+            return trimmed.StartsWith("{", StringComparison.Ordinal) || trimmed.StartsWith("[", StringComparison.Ordinal);
+        }
+
+        private static string GetSnippet(string body)
+        {
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return "<empty>";
+            }
+
+            var normalized = body.Replace("\r", " ").Replace("\n", " ").Trim();
+            if (normalized.Length > 220)
+            {
+                return normalized[..220] + "...";
+            }
+
+            return normalized;
+        }
+
         public int CalculateProgressPercentage(JiraIssue? issue)
         {
             if (issue?.Fields?.IssueLinks == null || issue.Fields.IssueLinks.Count == 0)
@@ -81,13 +182,14 @@ namespace JiraWidget
             }
 
             var doneCount = activityLinks.Count(link => link.OutwardIssue!.Fields!.Status!.Name == "Done");
-            
             return (int)((double)doneCount / activityLinks.Count * 100);
         }
+
         public void Disconnect()
         {
             _httpClient?.Dispose();
             _httpClient = null;
+            AppLogger.Info("Disconnected Jira client.");
         }
     }
 }
