@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net;
 using System.Text.Json;
 using System.Threading.Tasks;
 
@@ -19,11 +20,34 @@ namespace JiraWidget
                 _httpClient.BaseAddress = new Uri(baseUrl);
                 _httpClient.DefaultRequestHeaders.Accept.Clear();
                 _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pat);
+                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pat.Trim());
             }
             catch (Exception)
             {
                 // Errors will be caught when an actual API call is made.
+            }
+        }
+
+        public async Task<(bool isConnected, string? errorMessage)> ValidateConnectionAsync()
+        {
+            if (_httpClient == null)
+            {
+                return (false, "Not connected.");
+            }
+
+            try
+            {
+                var response = await _httpClient.GetAsync("/rest/api/3/myself");
+                if (response.IsSuccessStatusCode)
+                {
+                    return (true, null);
+                }
+
+                return (false, await BuildErrorMessageAsync(response));
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Exception: {ex.Message}");
             }
         }
 
@@ -36,33 +60,47 @@ namespace JiraWidget
 
             try
             {
-                // Using POST to the /search endpoint with JQL.
-                var jql = $"key = '{issueKey}'";
-                var jsonBody = $"{{\"jql\":\"{jql}\",\"fields\":[\"summary\",\"status\",\"issuelinks\"]}}";
-                var content = new StringContent(jsonBody, System.Text.Encoding.UTF8, "application/json");
-                var response = await _httpClient.PostAsync("/rest/api/2/search", content);
+                var encodedIssueKey = WebUtility.UrlEncode(issueKey);
+                var response = await _httpClient.GetAsync($"/rest/api/3/issue/{encodedIssueKey}?fields=summary,status,issuelinks");
 
                 if (response.IsSuccessStatusCode)
                 {
                     var jsonString = await response.Content.ReadAsStringAsync();
-                    var searchResult = JsonSerializer.Deserialize<JiraSearchResult>(jsonString);
-                    var issue = searchResult?.Issues?.FirstOrDefault();
-                    if (issue == null)
-                    {
-                        return (null, "Issue not found via search.");
-                    }
-                    return (issue, null);
+                    var issue = JsonSerializer.Deserialize<JiraIssue>(jsonString);
+                    return issue == null ? (null, "Issue not found.") : (issue, null);
                 }
-                else
-                {
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    return (null, $"{(int)response.StatusCode}: {response.ReasonPhrase}");
-                }
+
+                return (null, await BuildErrorMessageAsync(response));
             }
             catch (Exception ex)
             {
                 return (null, $"Exception: {ex.Message}");
             }
+        }
+
+        private static async Task<string> BuildErrorMessageAsync(HttpResponseMessage response)
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                try
+                {
+                    var jiraError = JsonSerializer.Deserialize<JiraErrorResponse>(body);
+                    var parsedError = jiraError?.ErrorMessages?.FirstOrDefault()
+                        ?? jiraError?.Errors?.Values.FirstOrDefault();
+
+                    if (!string.IsNullOrWhiteSpace(parsedError))
+                    {
+                        return $"{(int)response.StatusCode}: {parsedError}";
+                    }
+                }
+                catch (JsonException)
+                {
+                    // ignore parse errors and fall back to status text.
+                }
+            }
+
+            return $"{(int)response.StatusCode}: {response.ReasonPhrase}";
         }
         public int CalculateProgressPercentage(JiraIssue? issue)
         {

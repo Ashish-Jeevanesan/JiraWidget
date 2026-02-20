@@ -62,7 +62,7 @@ namespace JiraWidget
             this.Close();
         }
 
-        private void ConnectButton_Click(object sender, RoutedEventArgs e)
+        private async void ConnectButton_Click(object sender, RoutedEventArgs e)
         {
             if (string.IsNullOrWhiteSpace(JiraUrlTextBox.Text) || string.IsNullOrWhiteSpace(PatTextBox.Text))
             {
@@ -71,6 +71,13 @@ namespace JiraWidget
             }
 
             _jiraService.SetupClient(JiraUrlTextBox.Text, PatTextBox.Text);
+
+            var (isConnected, errorMessage) = await _jiraService.ValidateConnectionAsync();
+            if (!isConnected)
+            {
+                await ShowErrorDialog($"Login failed. {errorMessage ?? "Please verify Jira URL and token."}");
+                return;
+            }
 
             // Switch to the main view
             LoginView.Visibility = Visibility.Collapsed;
@@ -97,7 +104,12 @@ namespace JiraWidget
             }
 
             // 3. Add to collection
-            var newIssueViewModel = new TrackedIssueViewModel { DisplayText = issueKey, StatusText = "Loading..." };
+            var newIssueViewModel = new TrackedIssueViewModel
+            {
+                IssueKey = issueKey,
+                DisplayText = issueKey,
+                StatusText = "Loading..."
+            };
             TrackedIssues.Add(newIssueViewModel);
             AdjustWindowHeight();
 
