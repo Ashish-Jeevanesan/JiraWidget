@@ -68,4 +68,13 @@ namespace JiraWidget
         [JsonPropertyName("issues")]
         public List<JiraIssue>? Issues { get; set; }
     }
+
+    public class JiraErrorResponse
+    {
+        [JsonPropertyName("errorMessages")]
+        public List<string>? ErrorMessages { get; set; }
+
+        [JsonPropertyName("errors")]
+        public Dictionary<string, string>? Errors { get; set; }
+    }
 }
