@@ -1,7 +1,9 @@
 using System;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net;
 using System.Text.Json;
 using System.Threading.Tasks;
 
@@ -27,6 +29,7 @@ namespace JiraWidget
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pat.Trim());
 
                 AppLogger.Info($"Configured Jira client for '{baseUrl}' with auto-redirect disabled.");
+                AppLogger.Info($"Configured Jira client for '{baseUrl}'.");
                 return (true, null);
             }
             catch (Exception ex)
@@ -101,6 +104,7 @@ namespace JiraWidget
                     AppLogger.Error($"Issue lookup redirected for '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, Location={location}");
                     return (null, "Request was redirected to a login page (Okta/SSO). This Jira endpoint requires session/OAuth auth rather than the current token.");
                 }
+                var response = await _httpClient.GetAsync($"/rest/api/3/issue/{encodedIssueKey}?fields=summary,status,issuelinks");
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -111,6 +115,7 @@ namespace JiraWidget
                         var snippet = GetSnippet(body);
                         var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
                         AppLogger.Error($"Non-JSON success response for issue '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
+                        AppLogger.Error($"Non-JSON success response for issue '{issueKey}'. Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
                         return (null, "Received non-JSON response from Jira (likely SSO/permission HTML page). Please verify Jira API access for this issue.");
                     }
 
@@ -122,17 +127,20 @@ namespace JiraWidget
                     catch (JsonException ex)
                     {
                         AppLogger.Error($"Failed to parse Jira issue response for '{issueKey}' (api/{apiVersion}). Snippet={GetSnippet(body)}", ex);
+                        AppLogger.Error($"Failed to parse Jira issue response for '{issueKey}'. Snippet={GetSnippet(body)}", ex);
                         return (null, "Jira returned an unexpected response format.");
                     }
                 }
 
                 var error = await BuildErrorMessageAsync(response);
                 AppLogger.Error($"Issue lookup failed for '{issueKey}' (api/{apiVersion}): {error}");
+                AppLogger.Error($"Issue lookup failed for '{issueKey}': {error}");
                 return (null, error);
             }
             catch (Exception ex)
             {
                 AppLogger.Error($"Exception while fetching issue '{issueKey}' (api/{apiVersion}).", ex);
+                AppLogger.Error($"Exception while fetching issue '{issueKey}'.", ex);
                 return (null, $"Exception: {ex.Message}");
             }
         }
