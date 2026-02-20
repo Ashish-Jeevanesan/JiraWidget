@@ -43,7 +43,8 @@
                         <TextBox x:Name="JiraUrlTextBox" PlaceholderText="https://your-domain.atlassian.net"/>
                         <TextBlock Text="Personal Access Token" Foreground="White" Margin="0,10,0,4"/>
                         <TextBox x:Name="PatTextBox" PlaceholderText="Your Jira Personal Access Token"/>
-                        <Button x:Name="ConnectButton" Content="Connect" Click="ConnectButton_Click" HorizontalAlignment="Center"/>
+                        <Button x:Name="ConnectButton" Content="Connect (PAT)" Click="ConnectButton_Click" HorizontalAlignment="Center"/>
+                        <Button x:Name="OktaLoginButton" Content="Login with Okta (Browser)" Click="OktaLoginButton_Click" HorizontalAlignment="Center"/>
                     </StackPanel>
                 </ScrollViewer>
 
