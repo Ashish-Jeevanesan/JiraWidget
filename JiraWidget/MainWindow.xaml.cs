@@ -1,7 +1,9 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.Web.WebView2.Core;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -14,7 +16,7 @@ namespace JiraWidget
 {
     public sealed partial class MainWindow : Window
     {
-        private AppWindow _appWindow;
+        private readonly AppWindow _appWindow;
         private readonly JiraService _jiraService;
 
         public ObservableCollection<TrackedIssueViewModel> TrackedIssues { get; } = new();
@@ -28,9 +30,9 @@ namespace JiraWidget
 
         public MainWindow()
         {
-            this.InitializeComponent();
-            this.ExtendsContentIntoTitleBar = true;
-            this.SetTitleBar(DragArea);
+            InitializeComponent();
+            ExtendsContentIntoTitleBar = true;
+            SetTitleBar(DragArea);
 
             var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
             var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
@@ -41,14 +43,13 @@ namespace JiraWidget
 
             var presenter = (OverlappedPresenter)_appWindow.Presenter;
             presenter.IsAlwaysOnTop = true;
-            presenter.IsResizable = false;
-            presenter.IsMaximizable = false;
+            presenter.IsResizable = true;
+            presenter.IsMaximizable = true;
             presenter.SetBorderAndTitleBar(false, false);
 
             _jiraService = new JiraService();
             TrackedIssuesItemsControl.ItemsSource = TrackedIssues;
 
-            // Pre-populate for development
             JiraUrlTextBox.Text = "https://jira.globusmedical.com/";
             PatTextBox.Text = "";
 
@@ -65,14 +66,40 @@ namespace JiraWidget
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {
-            this.Close();
+            Close();
         }
 
         private async void ConnectButton_Click(object sender, RoutedEventArgs e)
         {
             if (string.IsNullOrWhiteSpace(JiraUrlTextBox.Text) || string.IsNullOrWhiteSpace(PatTextBox.Text))
             {
-                _ = ShowErrorDialog("Please fill in all fields.");
+                await ShowErrorDialog("Please fill in Jira URL and PAT.");
+                return;
+            }
+
+            try
+            {
+                var (isConfigured, setupError) = _jiraService.SetupClient(JiraUrlTextBox.Text, PatTextBox.Text);
+                if (!isConfigured)
+                {
+                    await ShowErrorDialog($"Login failed during client setup. {setupError}");
+                    return;
+                }
+
+                await ValidateAndEnterMainViewAsync("Please verify Jira URL and token.");
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Unhandled exception in ConnectButton_Click.", ex);
+                await ShowErrorDialog($"Unexpected error during login. Check log: {AppLogger.LogPath}");
+            }
+        }
+
+        private async void OktaLoginButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(JiraUrlTextBox.Text))
+            {
+                await ShowErrorDialog("Please enter Jira URL before starting Okta login.");
                 return;
             }
 
@@ -105,7 +132,7 @@ namespace JiraWidget
 
         private void TrackButton_Click(object sender, RoutedEventArgs e)
         {
-            var issueKey = IssueKeyTextBox.Text.Trim().ToUpper();
+            var issueKey = IssueKeyTextBox.Text.Trim().ToUpperInvariant();
 
             if (!Regex.IsMatch(issueKey, @"^PC-\d+$"))
             {
@@ -220,7 +247,7 @@ namespace JiraWidget
                 Title = "Error",
                 Content = message,
                 CloseButtonText = "OK",
-                XamlRoot = this.Content.XamlRoot
+                XamlRoot = Content.XamlRoot
             };
             await dialog.ShowAsync();
         }
