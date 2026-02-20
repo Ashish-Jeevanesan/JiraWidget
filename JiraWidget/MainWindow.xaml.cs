@@ -76,19 +76,31 @@ namespace JiraWidget
                 return;
             }
 
-            _jiraService.SetupClient(JiraUrlTextBox.Text, PatTextBox.Text);
-
-            var (isConnected, errorMessage) = await _jiraService.ValidateConnectionAsync();
-            if (!isConnected)
+            try
             {
-                await ShowErrorDialog($"Login failed. {errorMessage ?? "Please verify Jira URL and token."}");
-                return;
-            }
+                var (isConfigured, setupError) = _jiraService.SetupClient(JiraUrlTextBox.Text, PatTextBox.Text);
+                if (!isConfigured)
+                {
+                    await ShowErrorDialog($"Login failed during client setup. {setupError}");
+                    return;
+                }
 
-            // Switch to the main view
-            LoginView.Visibility = Visibility.Collapsed;
-            MainView.Visibility = Visibility.Visible;
-            AdjustWindowHeight();
+                var (isConnected, errorMessage) = await _jiraService.ValidateConnectionAsync();
+                if (!isConnected)
+                {
+                    await ShowErrorDialog($"Login failed. {errorMessage ?? "Please verify Jira URL and token."}");
+                    return;
+                }
+
+                LoginView.Visibility = Visibility.Collapsed;
+                MainView.Visibility = Visibility.Visible;
+                AdjustWindowSize();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Unhandled exception in ConnectButton_Click.", ex);
+                await ShowErrorDialog($"Unexpected error during login. Check log: {AppLogger.LogPath}");
+            }
         }
 
         private void TrackButton_Click(object sender, RoutedEventArgs e)
@@ -107,13 +119,13 @@ namespace JiraWidget
                 return;
             }
 
-            // 3. Add to collection
             var newIssueViewModel = new TrackedIssueViewModel
             {
                 IssueKey = issueKey,
                 DisplayText = issueKey,
                 StatusText = "Loading..."
             };
+
             TrackedIssues.Add(newIssueViewModel);
             AdjustWindowSize();
 

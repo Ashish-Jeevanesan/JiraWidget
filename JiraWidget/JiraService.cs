@@ -13,7 +13,7 @@ namespace JiraWidget
     {
         private static HttpClient? _httpClient;
 
-        public void SetupClient(string baseUrl, string pat)
+        public (bool isConfigured, string? errorMessage) SetupClient(string baseUrl, string pat)
         {
             try
             {
@@ -22,6 +22,22 @@ namespace JiraWidget
                 _httpClient.DefaultRequestHeaders.Accept.Clear();
                 _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pat.Trim());
+
+                AppLogger.Info($"Configured Jira client for '{baseUrl}'.");
+                return (true, null);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Failed to configure Jira client.", ex);
+                return (false, ex.Message);
+            }
+        }
+
+        public async Task<(bool isConnected, string? errorMessage)> ValidateConnectionAsync()
+        {
+            if (_httpClient == null)
+            {
+                return (false, "Not connected.");
             }
 
             try
@@ -44,29 +60,6 @@ namespace JiraWidget
             }
         }
 
-        public async Task<(bool isConnected, string? errorMessage)> ValidateConnectionAsync()
-        {
-            if (_httpClient == null)
-            {
-                return (false, "Not connected.");
-            }
-
-            try
-            {
-                var response = await _httpClient.GetAsync("/rest/api/3/myself");
-                if (response.IsSuccessStatusCode)
-                {
-                    return (true, null);
-                }
-
-                return (false, await BuildErrorMessageAsync(response));
-            }
-            catch (Exception ex)
-            {
-                return (false, $"Exception: {ex.Message}");
-            }
-        }
-
         public async Task<(JiraIssue? issue, string? errorMessage)> GetIssueAsync(string issueKey)
         {
             if (_httpClient == null)
@@ -76,7 +69,7 @@ namespace JiraWidget
 
             try
             {
-                var encodedIssueKey = WebUtility.UrlEncode(issueKey);
+                var encodedIssueKey = Uri.EscapeDataString(issueKey);
                 var response = await _httpClient.GetAsync($"/rest/api/3/issue/{encodedIssueKey}?fields=summary,status,issuelinks");
 
                 if (response.IsSuccessStatusCode)
@@ -86,7 +79,9 @@ namespace JiraWidget
                     return issue == null ? (null, "Issue not found.") : (issue, null);
                 }
 
-                return (null, await BuildErrorMessageAsync(response));
+                var error = await BuildErrorMessageAsync(response);
+                AppLogger.Error($"Issue lookup failed for '{issueKey}': {error}");
+                return (null, error);
             }
             catch (Exception ex)
             {
@@ -111,14 +106,15 @@ namespace JiraWidget
                         return $"{(int)response.StatusCode}: {parsedError}";
                     }
                 }
-                catch (JsonException)
+                catch (JsonException ex)
                 {
-                    // ignore parse errors and fall back to status text.
+                    AppLogger.Error("Failed to parse Jira error response.", ex);
                 }
             }
 
             return $"{(int)response.StatusCode}: {response.ReasonPhrase}";
         }
+
         public int CalculateProgressPercentage(JiraIssue? issue)
         {
             if (issue?.Fields?.IssueLinks == null || issue.Fields.IssueLinks.Count == 0)
