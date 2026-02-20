@@ -45,6 +45,12 @@
                         <TextBox x:Name="PatTextBox" PlaceholderText="Your Jira Personal Access Token"/>
                         <Button x:Name="ConnectButton" Content="Connect (PAT)" Click="ConnectButton_Click" HorizontalAlignment="Center"/>
                         <Button x:Name="OktaLoginButton" Content="Login with Okta (Browser)" Click="OktaLoginButton_Click" HorizontalAlignment="Center"/>
+                        <Border x:Name="OktaWebViewHost" Background="#111" CornerRadius="8" Padding="6" Visibility="Collapsed">
+                            <StackPanel Spacing="8">
+                                <WebView2 x:Name="OktaWebView" Height="360"/>
+                                <Button x:Name="OktaContinueButton" Content="Continue" Click="OktaContinueButton_Click" HorizontalAlignment="Right"/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
 

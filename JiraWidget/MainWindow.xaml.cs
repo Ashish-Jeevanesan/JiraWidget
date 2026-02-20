@@ -18,6 +18,9 @@ namespace JiraWidget
     {
         private readonly AppWindow _appWindow;
         private readonly JiraService _jiraService;
+        private Uri? _jiraBaseUri;
+        private bool _oktaLoginInitialized;
+        private bool _oktaLoginCompleted;
 
         public ObservableCollection<TrackedIssueViewModel> TrackedIssues { get; } = new();
 
@@ -25,6 +28,7 @@ namespace JiraWidget
         private const int MainViewBaseHeight = 160;
         private const int HeightPerIssue = 58;
         private const int MaxMainHeight = 640;
+        private const int DefaultMainIssueSlots = 3;
         private const int MinWindowWidth = 340;
         private const int MaxWindowWidth = 520;
 
@@ -105,23 +109,19 @@ namespace JiraWidget
 
             try
             {
-                var (isConfigured, setupError) = _jiraService.SetupClient(JiraUrlTextBox.Text, PatTextBox.Text);
-                if (!isConfigured)
+                if (!Uri.TryCreate(JiraUrlTextBox.Text.Trim(), UriKind.Absolute, out var baseUri))
                 {
-                    await ShowErrorDialog($"Login failed during client setup. {setupError}");
+                    await ShowErrorDialog("Please enter a valid Jira URL (e.g., https://your-domain.atlassian.net/).");
                     return;
                 }
 
-                var (isConnected, errorMessage) = await _jiraService.ValidateConnectionAsync();
-                if (!isConnected)
-                {
-                    await ShowErrorDialog($"Login failed. {errorMessage ?? "Please verify Jira URL and token."}");
-                    return;
-                }
+                _jiraBaseUri = baseUri;
+                await EnsureOktaWebViewAsync();
+                OktaWebViewHost.Visibility = Visibility.Visible;
 
-                LoginView.Visibility = Visibility.Collapsed;
-                MainView.Visibility = Visibility.Visible;
-                AdjustWindowSize();
+                // Start SSO flow in the embedded browser.
+                OktaWebView.Source = _jiraBaseUri;
+                AppLogger.Info($"Okta login initiated. BaseUrl='{_jiraBaseUri}'.");
             }
             catch (Exception ex)
             {
@@ -214,6 +214,9 @@ namespace JiraWidget
         {
             _jiraService.Disconnect();
             TrackedIssues.Clear();
+            _oktaLoginCompleted = false;
+            OktaWebViewHost.Visibility = Visibility.Collapsed;
+            OktaWebView.Source = null;
 
             MainView.Visibility = Visibility.Collapsed;
             LoginView.Visibility = Visibility.Visible;
@@ -223,7 +226,8 @@ namespace JiraWidget
 
         private void AdjustWindowSize()
         {
-            var newHeight = MainViewBaseHeight + (TrackedIssues.Count * HeightPerIssue);
+            var visibleIssueSlots = Math.Max(TrackedIssues.Count, DefaultMainIssueSlots);
+            var newHeight = MainViewBaseHeight + (visibleIssueSlots * HeightPerIssue);
             if (newHeight > MaxMainHeight)
             {
                 newHeight = MaxMainHeight;
@@ -250,6 +254,140 @@ namespace JiraWidget
                 XamlRoot = Content.XamlRoot
             };
             await dialog.ShowAsync();
+        }
+
+        private async Task<bool> ValidateAndEnterMainViewAsync(string defaultErrorMessage)
+        {
+            var (isConnected, errorMessage) = await _jiraService.ValidateConnectionAsync();
+            if (!isConnected)
+            {
+                await ShowErrorDialog($"Login failed. {errorMessage ?? defaultErrorMessage}");
+                return false;
+            }
+
+            LoginView.Visibility = Visibility.Collapsed;
+            MainView.Visibility = Visibility.Visible;
+            AdjustWindowSize();
+            return true;
+        }
+
+        private async Task EnsureOktaWebViewAsync()
+        {
+            if (_oktaLoginInitialized)
+            {
+                return;
+            }
+
+            await OktaWebView.EnsureCoreWebView2Async();
+            OktaWebView.CoreWebView2.NavigationCompleted += OktaWebView_NavigationCompleted;
+            _oktaLoginInitialized = true;
+            AppLogger.Info("Okta WebView initialized.");
+        }
+
+        private async void OktaWebView_NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            if (_oktaLoginCompleted || _jiraBaseUri == null || OktaWebView.CoreWebView2 == null)
+            {
+                return;
+            }
+
+            var currentUrl = OktaWebView.Source?.ToString();
+            if (string.IsNullOrWhiteSpace(currentUrl) || !Uri.TryCreate(currentUrl, UriKind.Absolute, out var currentUri))
+            {
+                AppLogger.Info("Okta navigation completed, but current URL is unavailable.");
+                return;
+            }
+
+            if (!string.Equals(currentUri.Host, _jiraBaseUri.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                AppLogger.Info($"Okta navigation completed on non-Jira host '{currentUri.Host}'. Waiting for Jira host '{_jiraBaseUri.Host}'.");
+                return;
+            }
+
+            if (currentUri.AbsolutePath.Contains("login", StringComparison.OrdinalIgnoreCase))
+            {
+                AppLogger.Info($"Okta navigation completed on Jira login path '{currentUri.AbsolutePath}'. Waiting for a non-login page.");
+                return;
+            }
+
+            await TryCompleteOktaLoginAsync("NavigationCompleted");
+        }
+
+        private async void OktaContinueButton_Click(object sender, RoutedEventArgs e)
+        {
+            await TryCompleteOktaLoginAsync("ContinueButton");
+        }
+
+        private async Task TryCompleteOktaLoginAsync(string trigger)
+        {
+            if (_oktaLoginCompleted)
+            {
+                AppLogger.Info($"Okta login completion skipped (already completed). Trigger={trigger}");
+                return;
+            }
+
+            if (_jiraBaseUri == null)
+            {
+                await ShowErrorDialog("Missing Jira URL. Please enter the Jira URL and try again.");
+                return;
+            }
+
+            if (OktaWebView.CoreWebView2 == null)
+            {
+                await ShowErrorDialog("Okta browser is not ready yet. Please wait a moment and try again.");
+                return;
+            }
+
+            try
+            {
+                var currentUrl = OktaWebView.Source?.ToString() ?? "<null>";
+                AppLogger.Info($"Attempting Okta login completion. Trigger={trigger}, CurrentUrl='{currentUrl}'.");
+
+                var cookies = await OktaWebView.CoreWebView2.CookieManager.GetCookiesAsync(_jiraBaseUri.ToString());
+                AppLogger.Info($"Okta cookies retrieved. Count={cookies.Count}.");
+
+                foreach (var cookie in cookies)
+                {
+                    AppLogger.Info($"Okta cookie found. Name='{cookie.Name}', Domain='{cookie.Domain}', Path='{cookie.Path}', Secure={cookie.IsSecure}, HttpOnly={cookie.IsHttpOnly}");
+                }
+
+                var sessionCookies = cookies
+                    .Select(cookie => new JiraSessionCookie
+                    {
+                        Name = cookie.Name,
+                        Value = cookie.Value,
+                        Domain = cookie.Domain,
+                        Path = cookie.Path,
+                        IsSecure = cookie.IsSecure,
+                        IsHttpOnly = cookie.IsHttpOnly
+                    })
+                    .ToList();
+
+                var (isConfigured, setupError) = _jiraService.SetupClientWithCookies(_jiraBaseUri.ToString(), sessionCookies);
+                if (!isConfigured)
+                {
+                    await ShowErrorDialog($"Login failed during client setup. {setupError}");
+                    return;
+                }
+
+                AppLogger.Info("Okta login cookies captured; proceeding to Jira API validation.");
+                var validated = await ValidateAndEnterMainViewAsync("Okta login was not accepted for Jira API access.");
+                if (validated)
+                {
+                    _oktaLoginCompleted = true;
+                    OktaWebViewHost.Visibility = Visibility.Collapsed;
+                    AppLogger.Info("Okta login completed successfully.");
+                }
+                else
+                {
+                    AppLogger.Info("Okta login validation failed; keeping WebView open for retry.");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Unhandled exception while completing Okta login.", ex);
+                await ShowErrorDialog($"Unexpected error during Okta login. Check log: {AppLogger.LogPath}");
+            }
         }
     }
 }

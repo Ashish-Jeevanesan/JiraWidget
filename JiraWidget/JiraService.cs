@@ -39,6 +39,51 @@ namespace JiraWidget
             }
         }
 
+        public (bool isConfigured, string? errorMessage) SetupClientWithCookies(string baseUrl, IEnumerable<JiraSessionCookie> cookies)
+        {
+            try
+            {
+                var handler = new HttpClientHandler
+                {
+                    AllowAutoRedirect = false,
+                    CookieContainer = new CookieContainer()
+                };
+
+                var baseUri = new Uri(baseUrl);
+                foreach (var cookie in cookies)
+                {
+                    var netCookie = new Cookie(cookie.Name, cookie.Value, cookie.Path, cookie.Domain)
+                    {
+                        Secure = cookie.IsSecure,
+                        HttpOnly = cookie.IsHttpOnly
+                    };
+                    var cookieDomain = cookie.Domain?.TrimStart('.') ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(cookieDomain))
+                    {
+                        handler.CookieContainer.Add(baseUri, netCookie);
+                    }
+                    else
+                    {
+                        var cookieUri = new Uri($"{baseUri.Scheme}://{cookieDomain}");
+                        handler.CookieContainer.Add(cookieUri, netCookie);
+                    }
+                }
+
+                _httpClient = new HttpClient(handler);
+                _httpClient.BaseAddress = baseUri;
+                _httpClient.DefaultRequestHeaders.Accept.Clear();
+                _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+                AppLogger.Info($"Configured Jira client for '{baseUrl}' using session cookies.");
+                return (true, null);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("Failed to configure Jira client with cookies.", ex);
+                return (false, ex.Message);
+            }
+        }
+
         public async Task<(bool isConnected, string? errorMessage)> ValidateConnectionAsync()
         {
             if (_httpClient == null)
@@ -48,29 +93,47 @@ namespace JiraWidget
 
             try
             {
-                var response = await _httpClient.GetAsync("/rest/api/3/myself");
-                if (response.IsSuccessStatusCode)
+                var (okV3, errorV3) = await TryValidateConnectionAsync("3");
+                if (okV3)
                 {
-                    AppLogger.Info("Jira connection validation succeeded.");
                     return (true, null);
                 }
 
-                if (IsRedirect(response))
+                AppLogger.Info($"API v3 connection validation failed. Trying v2. Reason: {errorV3}");
+                var (okV2, errorV2) = await TryValidateConnectionAsync("2");
+                if (okV2)
                 {
-                    var location = response.Headers.Location?.ToString() ?? "<unknown>";
-                    AppLogger.Error($"Connection validation redirected. Status={(int)response.StatusCode}, Location={location}");
-                    return (false, "Authentication was redirected to a login page (likely Okta/SSO). API token-based access is not valid for this flow.");
+                    return (true, null);
                 }
 
-                var error = await BuildErrorMessageAsync(response);
-                AppLogger.Error($"Jira connection validation failed: {error}");
-                return (false, error);
+                return (false, errorV2 ?? errorV3 ?? "Connection validation failed.");
             }
             catch (Exception ex)
             {
                 AppLogger.Error("Exception during Jira connection validation.", ex);
                 return (false, $"Exception: {ex.Message}");
             }
+        }
+
+        private async Task<(bool ok, string? errorMessage)> TryValidateConnectionAsync(string apiVersion)
+        {
+            var response = await _httpClient!.GetAsync($"/rest/api/{apiVersion}/myself");
+            if (response.IsSuccessStatusCode)
+            {
+                AppLogger.Info($"Jira connection validation succeeded (api/{apiVersion}).");
+                return (true, null);
+            }
+
+            if (IsRedirect(response))
+            {
+                var location = response.Headers.Location?.ToString() ?? "<unknown>";
+                AppLogger.Error($"Connection validation redirected (api/{apiVersion}). Status={(int)response.StatusCode}, Location={location}");
+                return (false, "Authentication was redirected to a login page (likely Okta/SSO). API token-based access is not valid for this flow.");
+            }
+
+            var error = await BuildErrorMessageAsync(response);
+            AppLogger.Error($"Jira connection validation failed (api/{apiVersion}): {error}");
+            return (false, error);
         }
 
         public async Task<(JiraIssue? issue, string? errorMessage)> GetIssueAsync(string issueKey)
@@ -104,7 +167,6 @@ namespace JiraWidget
                     AppLogger.Error($"Issue lookup redirected for '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, Location={location}");
                     return (null, "Request was redirected to a login page (Okta/SSO). This Jira endpoint requires session/OAuth auth rather than the current token.");
                 }
-                response = await _httpClient.GetAsync($"/rest/api/3/issue/{encodedIssueKey}?fields=summary,status,issuelinks");
 
                 if (response.IsSuccessStatusCode)
                 {
