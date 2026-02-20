@@ -17,12 +17,18 @@ namespace JiraWidget
         {
             try
             {
-                _httpClient = new HttpClient();
+                var handler = new HttpClientHandler
+                {
+                    AllowAutoRedirect = false
+                };
+
+                _httpClient = new HttpClient(handler);
                 _httpClient.BaseAddress = new Uri(baseUrl);
                 _httpClient.DefaultRequestHeaders.Accept.Clear();
                 _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pat.Trim());
 
+                AppLogger.Info($"Configured Jira client for '{baseUrl}' with auto-redirect disabled.");
                 AppLogger.Info($"Configured Jira client for '{baseUrl}'.");
                 return (true, null);
             }
@@ -49,6 +55,13 @@ namespace JiraWidget
                     return (true, null);
                 }
 
+                if (IsRedirect(response))
+                {
+                    var location = response.Headers.Location?.ToString() ?? "<unknown>";
+                    AppLogger.Error($"Connection validation redirected. Status={(int)response.StatusCode}, Location={location}");
+                    return (false, "Authentication was redirected to a login page (likely Okta/SSO). API token-based access is not valid for this flow.");
+                }
+
                 var error = await BuildErrorMessageAsync(response);
                 AppLogger.Error($"Jira connection validation failed: {error}");
                 return (false, error);
@@ -67,9 +80,30 @@ namespace JiraWidget
                 return (null, "Not connected.");
             }
 
+            var (issue, errorV3) = await GetIssueForApiVersionAsync(issueKey, "3");
+            if (issue != null)
+            {
+                return (issue, null);
+            }
+
+            AppLogger.Info($"API v3 issue lookup failed for '{issueKey}'. Trying v2. Reason: {errorV3}");
+            var (issueV2, errorV2) = await GetIssueForApiVersionAsync(issueKey, "2");
+            return issueV2 != null ? (issueV2, null) : (null, errorV2 ?? errorV3);
+        }
+
+        private async Task<(JiraIssue? issue, string? errorMessage)> GetIssueForApiVersionAsync(string issueKey, string apiVersion)
+        {
             try
             {
                 var encodedIssueKey = Uri.EscapeDataString(issueKey);
+                var response = await _httpClient!.GetAsync($"/rest/api/{apiVersion}/issue/{encodedIssueKey}?fields=summary,status,issuelinks");
+
+                if (IsRedirect(response))
+                {
+                    var location = response.Headers.Location?.ToString() ?? "<unknown>";
+                    AppLogger.Error($"Issue lookup redirected for '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, Location={location}");
+                    return (null, "Request was redirected to a login page (Okta/SSO). This Jira endpoint requires session/OAuth auth rather than the current token.");
+                }
                 var response = await _httpClient.GetAsync($"/rest/api/3/issue/{encodedIssueKey}?fields=summary,status,issuelinks");
 
                 if (response.IsSuccessStatusCode)
@@ -80,6 +114,7 @@ namespace JiraWidget
                     {
                         var snippet = GetSnippet(body);
                         var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
+                        AppLogger.Error($"Non-JSON success response for issue '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
                         AppLogger.Error($"Non-JSON success response for issue '{issueKey}'. Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
                         return (null, "Received non-JSON response from Jira (likely SSO/permission HTML page). Please verify Jira API access for this issue.");
                     }
@@ -91,17 +126,20 @@ namespace JiraWidget
                     }
                     catch (JsonException ex)
                     {
+                        AppLogger.Error($"Failed to parse Jira issue response for '{issueKey}' (api/{apiVersion}). Snippet={GetSnippet(body)}", ex);
                         AppLogger.Error($"Failed to parse Jira issue response for '{issueKey}'. Snippet={GetSnippet(body)}", ex);
                         return (null, "Jira returned an unexpected response format.");
                     }
                 }
 
                 var error = await BuildErrorMessageAsync(response);
+                AppLogger.Error($"Issue lookup failed for '{issueKey}' (api/{apiVersion}): {error}");
                 AppLogger.Error($"Issue lookup failed for '{issueKey}': {error}");
                 return (null, error);
             }
             catch (Exception ex)
             {
+                AppLogger.Error($"Exception while fetching issue '{issueKey}' (api/{apiVersion}).", ex);
                 AppLogger.Error($"Exception while fetching issue '{issueKey}'.", ex);
                 return (null, $"Exception: {ex.Message}");
             }
@@ -137,6 +175,12 @@ namespace JiraWidget
             }
 
             return $"{(int)response.StatusCode}: {response.ReasonPhrase}";
+        }
+
+        private static bool IsRedirect(HttpResponseMessage response)
+        {
+            var code = (int)response.StatusCode;
+            return code is >= 300 and < 400;
         }
 
         private static bool LooksLikeJson(HttpResponseMessage response, string body)
