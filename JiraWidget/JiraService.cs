@@ -74,9 +74,26 @@ namespace JiraWidget
 
                 if (response.IsSuccessStatusCode)
                 {
-                    var jsonString = await response.Content.ReadAsStringAsync();
-                    var issue = JsonSerializer.Deserialize<JiraIssue>(jsonString);
-                    return issue == null ? (null, "Issue not found.") : (issue, null);
+                    var body = await response.Content.ReadAsStringAsync();
+
+                    if (!LooksLikeJson(response, body))
+                    {
+                        var snippet = GetSnippet(body);
+                        var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
+                        AppLogger.Error($"Non-JSON success response for issue '{issueKey}'. Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
+                        return (null, "Received non-JSON response from Jira (likely SSO/permission HTML page). Please verify Jira API access for this issue.");
+                    }
+
+                    try
+                    {
+                        var issue = JsonSerializer.Deserialize<JiraIssue>(body);
+                        return issue == null ? (null, "Issue not found.") : (issue, null);
+                    }
+                    catch (JsonException ex)
+                    {
+                        AppLogger.Error($"Failed to parse Jira issue response for '{issueKey}'. Snippet={GetSnippet(body)}", ex);
+                        return (null, "Jira returned an unexpected response format.");
+                    }
                 }
 
                 var error = await BuildErrorMessageAsync(response);
@@ -95,6 +112,13 @@ namespace JiraWidget
             var body = await response.Content.ReadAsStringAsync();
             if (!string.IsNullOrWhiteSpace(body))
             {
+                if (!LooksLikeJson(response, body))
+                {
+                    var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
+                    AppLogger.Error($"Non-JSON error response. Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={GetSnippet(body)}");
+                    return $"{(int)response.StatusCode}: Jira returned an HTML/non-JSON response (possible SSO redirect or access page).";
+                }
+
                 try
                 {
                     var jiraError = JsonSerializer.Deserialize<JiraErrorResponse>(body);
@@ -108,11 +132,39 @@ namespace JiraWidget
                 }
                 catch (JsonException ex)
                 {
-                    AppLogger.Error("Failed to parse Jira error response.", ex);
+                    AppLogger.Error($"Failed to parse Jira error response. Snippet={GetSnippet(body)}", ex);
                 }
             }
 
             return $"{(int)response.StatusCode}: {response.ReasonPhrase}";
+        }
+
+        private static bool LooksLikeJson(HttpResponseMessage response, string body)
+        {
+            var contentType = response.Content.Headers.ContentType?.MediaType;
+            if (!string.IsNullOrWhiteSpace(contentType) && contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var trimmed = body.TrimStart();
+            return trimmed.StartsWith("{", StringComparison.Ordinal) || trimmed.StartsWith("[", StringComparison.Ordinal);
+        }
+
+        private static string GetSnippet(string body)
+        {
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return "<empty>";
+            }
+
+            var normalized = body.Replace("\r", " ").Replace("\n", " ").Trim();
+            if (normalized.Length > 220)
+            {
+                return normalized[..220] + "...";
+            }
+
+            return normalized;
         }
 
         public int CalculateProgressPercentage(JiraIssue? issue)
