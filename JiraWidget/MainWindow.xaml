@@ -102,15 +102,30 @@
                                 <DataTemplate x:DataType="local:TrackedIssueViewModel">
                                     <Grid Margin="0,5">
                                         <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <StackPanel Grid.Column="0">
+                                        <Border x:Name="FavoriteIndicator"
+                                                Grid.Column="0"
+                                                Width="3"
+                                                Margin="0,0,8,0"
+                                                CornerRadius="2"
+                                                Background="#2ecc71"
+                                                x:Load="{x:Bind IsFavorite, Mode=OneWay}"/>
+                                        <Button x:Name="FavoriteButton"
+                                                Grid.Column="1"
+                                                Content="{x:Bind FavoriteGlyph, Mode=OneWay}"
+                                                Click="FavoriteButton_Click"
+                                                Style="{StaticResource TitleBarButtonStyle}"/>
+                                        <StackPanel Grid.Column="2">
+                                            <HyperlinkButton Content="{x:Bind IssueKey, Mode=OneWay}" Click="IssueLink_Click" HorizontalAlignment="Left" Padding="0"/>
                                             <TextBlock Text="{x:Bind DisplayText, Mode=OneWay}" FontWeight="SemiBold"/>
                                             <ProgressBar Value="{x:Bind Progress, Mode=OneWay}" Margin="0,4,0,0"/>
                                             <TextBlock Text="{x:Bind StatusText, Mode=OneWay}" Margin="0,4,0,0" Opacity="0.8" TextWrapping="WrapWholeWords"/>
                                         </StackPanel>
-                                        <StackPanel Grid.Column="1" Margin="10,0,0,0" Spacing="6" VerticalAlignment="Center">
+                                        <StackPanel Grid.Column="3" Margin="10,0,0,0" Spacing="6" VerticalAlignment="Center">
                                             <Button x:Name="RetryButton" Content="Retry" Click="RetryButton_Click" Style="{StaticResource IssueActionButtonStyle}" IsEnabled="{x:Bind CanRetry, Mode=OneWay}"/>
                                             <Button x:Name="RemoveButton" Content="X" Click="RemoveButton_Click" Style="{StaticResource TitleBarButtonStyle}"/>
                                         </StackPanel>

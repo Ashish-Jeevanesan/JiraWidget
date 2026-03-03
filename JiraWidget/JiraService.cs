@@ -175,6 +175,43 @@ namespace JiraWidget
             return (null, finalError);
         }
 
+        public async Task<(List<JiraSubtask> subtasks, string? errorMessage)> GetIncludedSubtasksAsync(string parentIssueKey, IEnumerable<string> includeSummaryTerms)
+        {
+            if (_httpClient == null)
+            {
+                return (new List<JiraSubtask>(), "Not connected.");
+            }
+
+            var terms = includeSummaryTerms
+                .Where(term => !string.IsNullOrWhiteSpace(term))
+                .Select(term => term.Trim())
+                .ToList();
+            if (terms.Count == 0)
+            {
+                return (new List<JiraSubtask>(), null);
+            }
+
+            var firstVersion = _preferredApiVersion ?? "3";
+            var secondVersion = firstVersion == "3" ? "2" : "3";
+
+            var (firstResult, firstError) = await GetIncludedSubtasksForApiVersionAsync(parentIssueKey, terms, firstVersion);
+            if (firstResult != null)
+            {
+                _preferredApiVersion = firstVersion;
+                return (firstResult, null);
+            }
+
+            AppLogger.Info($"Subtask lookup failed for '{parentIssueKey}' on api/{firstVersion}. Trying api/{secondVersion}. Reason: {firstError}");
+            var (secondResult, secondError) = await GetIncludedSubtasksForApiVersionAsync(parentIssueKey, terms, secondVersion);
+            if (secondResult != null)
+            {
+                _preferredApiVersion = secondVersion;
+                return (secondResult, null);
+            }
+
+            return (new List<JiraSubtask>(), secondError ?? firstError);
+        }
+
         private async Task<(JiraIssue? issue, string? errorMessage)> GetIssueForApiVersionAsync(string issueKey, string apiVersion)
         {
             try
@@ -220,6 +257,78 @@ namespace JiraWidget
                 AppLogger.Error($"Exception while fetching issue '{issueKey}' (api/{apiVersion}).", ex);
                 return (null, $"Exception: {ex.Message}");
             }
+        }
+
+        private async Task<(List<JiraSubtask>? subtasks, string? errorMessage)> GetIncludedSubtasksForApiVersionAsync(string parentIssueKey, List<string> includeTerms, string apiVersion)
+        {
+            try
+            {
+                var encodedIssueKey = Uri.EscapeDataString(parentIssueKey);
+                var response = await _httpClient!.GetAsync($"/rest/api/{apiVersion}/issue/{encodedIssueKey}?fields=subtasks");
+
+                if (IsRedirect(response))
+                {
+                    return (null, "Request was redirected to login while loading subtasks.");
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var error = await BuildErrorMessageAsync(response);
+                    return (null, error);
+                }
+
+                var body = await response.Content.ReadAsStringAsync();
+                if (!LooksLikeJson(response, body))
+                {
+                    return (null, "Received non-JSON response while loading subtasks.");
+                }
+
+                var container = JsonSerializer.Deserialize<JiraSubtaskContainer>(body);
+                var subtasks = container?.Fields?.Subtasks ?? new List<JiraSubtask>();
+                AppLogger.Info($"Fetched {subtasks.Count} subtask(s) for '{parentIssueKey}' (api/{apiVersion}).");
+                foreach (var subtask in subtasks)
+                {
+                    var key = subtask.Key ?? "<unknown-key>";
+                    var summary = subtask.Fields?.Summary ?? "<no-summary>";
+                    var status = subtask.Fields?.Status?.Name ?? "<no-status>";
+                    AppLogger.Info($"Subtask candidate for '{parentIssueKey}': Key='{key}', Summary='{summary}', Status='{status}'.");
+                }
+
+                var included = subtasks
+                    .Where(subtask => !string.IsNullOrWhiteSpace(subtask.Fields?.Summary))
+                    .Where(subtask => includeTerms.Any(term =>
+                        SummaryMatches(subtask.Fields!.Summary!, term)))
+                    .ToList();
+
+                AppLogger.Info($"Included {included.Count} subtask(s) for '{parentIssueKey}' after summary filters.");
+                return (included, null);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error($"Exception while loading subtasks for '{parentIssueKey}' (api/{apiVersion}).", ex);
+                return (null, $"Exception: {ex.Message}");
+            }
+        }
+
+        private static bool SummaryMatches(string summary, string term)
+        {
+            if (summary.Contains(term, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var normalizedSummary = NormalizeAlphaNumeric(summary);
+            var normalizedTerm = NormalizeAlphaNumeric(term);
+            return normalizedSummary.Contains(normalizedTerm, StringComparison.Ordinal);
+        }
+
+        private static string NormalizeAlphaNumeric(string input)
+        {
+            var chars = input
+                .Where(char.IsLetterOrDigit)
+                .Select(char.ToUpperInvariant)
+                .ToArray();
+            return new string(chars);
         }
 
         private static async Task<string> BuildErrorMessageAsync(HttpResponseMessage response)

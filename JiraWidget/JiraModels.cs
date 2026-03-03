@@ -47,12 +47,18 @@ namespace JiraWidget
 
     public class JiraLinkedIssue
     {
+        [JsonPropertyName("key")]
+        public string? Key { get; set; }
+
         [JsonPropertyName("fields")]
         public JiraLinkedIssueFields? Fields { get; set; }
     }
 
     public class JiraLinkedIssueFields
     {
+        [JsonPropertyName("summary")]
+        public string? Summary { get; set; }
+
         [JsonPropertyName("status")]
         public JiraStatus? Status { get; set; }
     }
@@ -76,5 +82,35 @@ namespace JiraWidget
 
         [JsonPropertyName("errors")]
         public Dictionary<string, string>? Errors { get; set; }
+    }
+
+    public class JiraSubtaskContainer
+    {
+        [JsonPropertyName("fields")]
+        public JiraSubtaskContainerFields? Fields { get; set; }
+    }
+
+    public class JiraSubtaskContainerFields
+    {
+        [JsonPropertyName("subtasks")]
+        public List<JiraSubtask>? Subtasks { get; set; }
+    }
+
+    public class JiraSubtask
+    {
+        [JsonPropertyName("key")]
+        public string? Key { get; set; }
+
+        [JsonPropertyName("fields")]
+        public JiraSubtaskFields? Fields { get; set; }
+    }
+
+    public class JiraSubtaskFields
+    {
+        [JsonPropertyName("summary")]
+        public string? Summary { get; set; }
+
+        [JsonPropertyName("status")]
+        public JiraStatus? Status { get; set; }
     }
 }

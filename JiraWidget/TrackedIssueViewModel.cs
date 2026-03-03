@@ -34,6 +34,21 @@ namespace JiraWidget
             set => SetProperty(ref _displayText, value);
         }
 
+        private bool _isFavorite;
+        public bool IsFavorite
+        {
+            get => _isFavorite;
+            set
+            {
+                if (SetProperty(ref _isFavorite, value))
+                {
+                    OnPropertyChanged(nameof(FavoriteGlyph));
+                }
+            }
+        }
+
+        public string FavoriteGlyph => IsFavorite ? "★" : "☆";
+
         private bool _isLoading;
         public bool IsLoading
         {

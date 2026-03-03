@@ -53,4 +53,23 @@ This log will be updated as development continues.
 ## Recent Updates:
 
 -   **2026-02-20:** Added a shared `ValidateAndEnterMainViewAsync` helper to consolidate login flow validation, and fixed the main view default size so the widget opens at the 3-item height before any issues are tracked.
-codex resume 019c7c93-387c-7d33-b68e-8f30351b1a83
+-   **2026-03-04 (Phase 1):**
+    - Hardened Okta completion flow with cookie-readiness retry and in-progress guard to reduce false login failures.
+    - Added session-level API version preference (auto-switch to v2 when v3 fails in this environment).
+    - Reduced duplicate/noisy error logging so expected fallback paths log as info.
+-   **2026-03-04 (Phase 2):**
+    - Added per-issue status text display and per-issue retry action.
+    - Added load-state tracking on issue rows to prevent overlapping fetch calls.
+-   **2026-03-04 (Favorites + Deep Link):**
+    - Added favorites persistence to `%LocalAppData%\\JiraWidget\\favorites.json`.
+    - Added favorite toggle on issue rows and automatic favorite removal when tracked issue is removed.
+    - Added auto-load of favorites immediately after successful login.
+    - Added clickable issue key to open Jira `/browse/{IssueKey}` in default browser.
+-   **2026-03-04 (UX + Shell):**
+    - Added title-bar menu (`☰`) with real window opacity control (layered window alpha).
+    - Added Enter-key shortcut in issue input to trigger track action.
+    - Added refreshed logo asset set for packaging/build outputs.
+-   **2026-03-04 (Progress Rule Adjustment):**
+    - Updated progress calculation to exclude `TSK-*` activity links.
+    - Added inclusion of specific subtasks (`PM Approval`, `Post-Production Verification` variants).
+    - Added detailed logging for included/excluded activity items and included subtasks.

@@ -7,6 +7,7 @@ using Microsoft.Web.WebView2.Core;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
@@ -22,6 +23,8 @@ namespace JiraWidget
         private readonly AppWindow _appWindow;
         private readonly IntPtr _hwnd;
         private readonly JiraService _jiraService;
+        private readonly FavoritesStore _favoritesStore;
+        private readonly HashSet<string> _favoriteIssueKeys = new(StringComparer.OrdinalIgnoreCase);
         private Uri? _jiraBaseUri;
         private bool _oktaLoginInitialized;
         private bool _oktaLoginCompleted;
@@ -45,6 +48,7 @@ namespace JiraWidget
         private const int GwlExStyle = -20;
         private const int WsExLayered = 0x00080000;
         private const uint LwaAlpha = 0x00000002;
+        private static readonly string[] IncludedSubtaskSummaryTerms = { "PM Approval", "Post-Production Verification", "Post Production Verification" };
 
         public MainWindow()
         {
@@ -66,6 +70,7 @@ namespace JiraWidget
             presenter.SetBorderAndTitleBar(false, false);
 
             _jiraService = new JiraService();
+            _favoritesStore = new FavoritesStore();
             TrackedIssuesItemsControl.ItemsSource = TrackedIssues;
 
             JiraUrlTextBox.Text = "https://jira.globusmedical.com/";
@@ -109,6 +114,13 @@ namespace JiraWidget
 
             try
             {
+                if (!Uri.TryCreate(JiraUrlTextBox.Text.Trim(), UriKind.Absolute, out var baseUri))
+                {
+                    await ShowErrorDialog("Please enter a valid Jira URL (e.g., https://your-domain.atlassian.net/).");
+                    return;
+                }
+
+                _jiraBaseUri = baseUri;
                 var (isConfigured, setupError) = _jiraService.SetupClient(JiraUrlTextBox.Text, PatTextBox.Text);
                 if (!isConfigured)
                 {
@@ -177,8 +189,9 @@ namespace JiraWidget
             var newIssueViewModel = new TrackedIssueViewModel
             {
                 IssueKey = issueKey,
-                DisplayText = issueKey,
-                StatusText = "Queued for loading..."
+                DisplayText = "Pending...",
+                StatusText = "Queued for loading...",
+                IsFavorite = _favoriteIssueKeys.Contains(issueKey)
             };
 
             TrackedIssues.Add(newIssueViewModel);
@@ -219,13 +232,101 @@ namespace JiraWidget
                         .Where(link => link.Type?.Name == "Activities" && link.OutwardIssue?.Fields?.Status != null)
                         .ToList();
 
-                    var total = activityLinks?.Count ?? 0;
-                    var done = activityLinks?.Count(link => link.OutwardIssue!.Fields!.Status!.Name == "Done") ?? 0;
+                    var excludedTaskLinks = activityLinks?
+                        .Where(link => link.OutwardIssue?.Key?.StartsWith("TSK-", StringComparison.OrdinalIgnoreCase) == true)
+                        .ToList() ?? new List<JiraIssueLink>();
+
+                    var includedDirectLinks = activityLinks?
+                        .Where(link => link.OutwardIssue?.Key?.StartsWith("TSK-", StringComparison.OrdinalIgnoreCase) != true)
+                        .ToList() ?? new List<JiraIssueLink>();
+
+                    var includedSubtasks = new List<JiraSubtask>();
+                    var includedSubtaskKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                    var (parentSubtasks, parentSubtaskError) = await _jiraService.GetIncludedSubtasksAsync(issueViewModel.IssueKey, IncludedSubtaskSummaryTerms);
+                    if (!string.IsNullOrWhiteSpace(parentSubtaskError))
+                    {
+                        AppLogger.Info($"Could not load included subtasks for parent issue '{issueViewModel.IssueKey}'. Reason: {parentSubtaskError}");
+                    }
+                    else
+                    {
+                        foreach (var subtask in parentSubtasks)
+                        {
+                            var subtaskKey = subtask.Key ?? string.Empty;
+                            if (includedSubtaskKeys.Add(subtaskKey))
+                            {
+                                includedSubtasks.Add(subtask);
+                            }
+                        }
+                    }
+
+                    foreach (var excludedTask in excludedTaskLinks)
+                    {
+                        var taskKey = excludedTask.OutwardIssue?.Key;
+                        if (string.IsNullOrWhiteSpace(taskKey))
+                        {
+                            continue;
+                        }
+
+                        var (subtasks, subtaskError) = await _jiraService.GetIncludedSubtasksAsync(taskKey, IncludedSubtaskSummaryTerms);
+                        if (!string.IsNullOrWhiteSpace(subtaskError))
+                        {
+                            AppLogger.Info($"Could not load included subtasks for '{taskKey}'. Reason: {subtaskError}");
+                            continue;
+                        }
+
+                        foreach (var subtask in subtasks)
+                        {
+                            var subtaskKey = subtask.Key ?? string.Empty;
+                            if (includedSubtaskKeys.Add(subtaskKey))
+                            {
+                                includedSubtasks.Add(subtask);
+                            }
+                        }
+                    }
+
+                    var total = includedDirectLinks.Count + includedSubtasks.Count;
+                    var doneDirect = includedDirectLinks.Count(link => link.OutwardIssue!.Fields!.Status!.Name == "Done");
+                    var doneSubtasks = includedSubtasks.Count(subtask => subtask.Fields?.Status?.Name == "Done");
+                    var done = doneDirect + doneSubtasks;
                     var percentage = (total == 0) ? 0 : (int)((double)done / total * 100);
                     var title = BuildDisplayTitle(issue.Fields?.Summary);
 
+                    AppLogger.Info($"Activities used for '{issueViewModel.IssueKey}' progress calculation: Count={total}, Done={done}.");
+                    foreach (var excludedTask in excludedTaskLinks)
+                    {
+                        var key = excludedTask.OutwardIssue?.Key ?? "<unknown-key>";
+                        var summary = excludedTask.OutwardIssue?.Fields?.Summary ?? "<no-summary>";
+                        var status = excludedTask.OutwardIssue?.Fields?.Status?.Name ?? "<no-status>";
+                        AppLogger.Info($"Excluded activity (TSK rule) for '{issueViewModel.IssueKey}': Key='{key}', Summary='{summary}', Status='{status}'.");
+                    }
+
+                    if (total == 0)
+                    {
+                        AppLogger.Info($"No included activities were found for '{issueViewModel.IssueKey}' after applying filters.");
+                    }
+                    else
+                    {
+                        foreach (var link in includedDirectLinks)
+                        {
+                            var linkedIssue = link.OutwardIssue;
+                            var linkedKey = linkedIssue?.Key ?? "<unknown-key>";
+                            var linkedSummary = linkedIssue?.Fields?.Summary ?? "<no-summary>";
+                            var linkedStatus = linkedIssue?.Fields?.Status?.Name ?? "<no-status>";
+                            AppLogger.Info($"Included activity link for '{issueViewModel.IssueKey}': Key='{linkedKey}', Summary='{linkedSummary}', Status='{linkedStatus}'.");
+                        }
+
+                        foreach (var subtask in includedSubtasks)
+                        {
+                            var subtaskKey = subtask.Key ?? "<unknown-key>";
+                            var subtaskSummary = subtask.Fields?.Summary ?? "<no-summary>";
+                            var subtaskStatus = subtask.Fields?.Status?.Name ?? "<no-status>";
+                            AppLogger.Info($"Included subtask for '{issueViewModel.IssueKey}': Key='{subtaskKey}', Summary='{subtaskSummary}', Status='{subtaskStatus}'.");
+                        }
+                    }
+
                     issueViewModel.Progress = percentage;
-                    issueViewModel.DisplayText = $"{issueViewModel.IssueKey} [{title}] ({percentage}%)";
+                    issueViewModel.DisplayText = $"{title} ({percentage}%)";
                     issueViewModel.StatusText = $"{done}/{total} Done";
                     AppLogger.Info($"Issue '{issueViewModel.IssueKey}' loaded successfully. Progress={percentage}%.");
                     AdjustWindowSize();
@@ -243,7 +344,7 @@ namespace JiraWidget
             {
                 AppLogger.Error($"Unhandled exception while loading '{issueViewModel.IssueKey}'.", ex);
                 issueViewModel.StatusText = "Error: Unexpected exception. Check logs.";
-                issueViewModel.DisplayText = issueViewModel.IssueKey;
+                issueViewModel.DisplayText = "Failed to load issue details.";
                 AdjustWindowSize();
             }
             finally
@@ -257,8 +358,63 @@ namespace JiraWidget
             if ((sender as FrameworkElement)?.DataContext is TrackedIssueViewModel issueToRemove)
             {
                 TrackedIssues.Remove(issueToRemove);
+                if (issueToRemove.IsFavorite)
+                {
+                    RemoveFavorite(issueToRemove.IssueKey);
+                }
                 AdjustWindowSize();
                 AppLogger.Info($"Removed issue '{issueToRemove.IssueKey}' from tracked list.");
+            }
+        }
+
+        private void FavoriteButton_Click(object sender, RoutedEventArgs e)
+        {
+            if ((sender as FrameworkElement)?.DataContext is not TrackedIssueViewModel issue)
+            {
+                return;
+            }
+
+            if (issue.IsFavorite)
+            {
+                issue.IsFavorite = false;
+                RemoveFavorite(issue.IssueKey);
+                AppLogger.Info($"Issue '{issue.IssueKey}' removed from favorites.");
+            }
+            else
+            {
+                issue.IsFavorite = true;
+                AddFavorite(issue.IssueKey);
+                AppLogger.Info($"Issue '{issue.IssueKey}' added to favorites.");
+            }
+        }
+
+        private async void IssueLink_Click(object sender, RoutedEventArgs e)
+        {
+            if ((sender as FrameworkElement)?.DataContext is not TrackedIssueViewModel issue)
+            {
+                return;
+            }
+
+            if (_jiraBaseUri == null)
+            {
+                await ShowErrorDialog("Jira base URL is unavailable. Please log in again.");
+                return;
+            }
+
+            try
+            {
+                var targetUri = new Uri(_jiraBaseUri, $"browse/{issue.IssueKey}");
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = targetUri.ToString(),
+                    UseShellExecute = true
+                });
+                AppLogger.Info($"Opened Jira issue link '{targetUri}'.");
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error($"Failed to open Jira issue '{issue.IssueKey}' in browser.", ex);
+                await ShowErrorDialog("Unable to open Jira issue link in your browser.");
             }
         }
 
@@ -354,6 +510,7 @@ namespace JiraWidget
             LoginView.Visibility = Visibility.Collapsed;
             MainView.Visibility = Visibility.Visible;
             AdjustWindowSize();
+            await AutoLoadFavoritesAsync();
             return true;
         }
 
@@ -540,6 +697,60 @@ namespace JiraWidget
 
             var alpha = (byte)Math.Round(Math.Clamp(opacity, MinAppOpacity, MaxAppOpacity) * 255, MidpointRounding.AwayFromZero);
             _ = SetLayeredWindowAttributes(_hwnd, 0, alpha, LwaAlpha);
+        }
+
+        private async Task AutoLoadFavoritesAsync()
+        {
+            _favoriteIssueKeys.Clear();
+            foreach (var key in _favoritesStore.LoadFavorites())
+            {
+                _favoriteIssueKeys.Add(key);
+            }
+
+            AppLogger.Info($"Loaded {_favoriteIssueKeys.Count} favorite issue(s).");
+            if (_favoriteIssueKeys.Count == 0)
+            {
+                return;
+            }
+
+            var keysToAdd = _favoriteIssueKeys
+                .Where(key => Regex.IsMatch(key, @"^PC-\d+$"))
+                .Where(key => TrackedIssues.All(issue => !string.Equals(issue.IssueKey, key, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            foreach (var issueKey in keysToAdd)
+            {
+                var viewModel = new TrackedIssueViewModel
+                {
+                    IssueKey = issueKey,
+                    DisplayText = "Pending...",
+                    StatusText = "Queued for loading...",
+                    IsFavorite = true
+                };
+
+                TrackedIssues.Add(viewModel);
+                _ = FetchIssueDetails(viewModel);
+            }
+
+            if (keysToAdd.Count > 0)
+            {
+                AdjustWindowSize();
+                AppLogger.Info($"Auto-loaded {keysToAdd.Count} favorite issue(s).");
+            }
+
+            await Task.CompletedTask;
+        }
+
+        private void AddFavorite(string issueKey)
+        {
+            _favoriteIssueKeys.Add(issueKey);
+            _favoritesStore.SaveFavorites(_favoriteIssueKeys);
+        }
+
+        private void RemoveFavorite(string issueKey)
+        {
+            _favoriteIssueKeys.Remove(issueKey);
+            _favoritesStore.SaveFavorites(_favoriteIssueKeys);
         }
 
         [DllImport("user32.dll", SetLastError = true)]

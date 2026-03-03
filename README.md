@@ -8,19 +8,31 @@ This project is no longer a static UI prototype. It includes:
 - Jira API integration through `HttpClient`
 - Login support for PAT (Bearer) and Okta browser-based session flow
 - Multi-issue tracking with per-issue progress bars
+- Favorites with local persistence and auto-load after login
+- Clickable issue keys that open Jira in your default browser
 - Dynamic resizing based on tracked issue count and content width
+- Window-level opacity control from a title-bar menu
 - Local file logging for diagnostics
 
 ## Current Features
 
 - Always-on-top floating window with custom title bar controls
+- Title bar menu (`☰`) with real-time transparency slider
 - Login view and tracking view in a single window
 - Track multiple issue keys (`PC-12345` format validation)
+- Press `Enter` in issue input to trigger tracking
 - Remove tracked issues individually
+- Favorite/unfavorite tracked issues (`★` / `☆`)
+- Favorite indicator bar on the left edge of favorited rows
+- Per-issue retry button for failed/refresh attempts
+- Auto-load favorite issues after successful login
+- Remove from favorites automatically when removed from tracked list
 - Jira API version fallback strategy (`/rest/api/3` then `/rest/api/2`)
-- Progress calculation based on linked issues:
-  - Link type: `Activities`
-  - Done state: linked issue status name equals `Done`
+- Progress calculation rules:
+  - Base source: `Activities` linked issues
+  - Exclude linked issues whose key starts with `TSK-`
+  - Include subtasks whose summary matches `PM Approval` or `Post-Production Verification`
+  - Done state: status name equals `Done`
 
 ## Tech Stack
 
@@ -57,16 +69,18 @@ This project is no longer a static UI prototype. It includes:
 
 - Application logs are written to:
   - `%LocalAppData%\\JiraWidget\\jira-widget.log`
-- The root folder may also contain a copied log (`jira-widget.log`) from development runs.
+- In packaged runs, this typically resolves under:
+  - `%LocalAppData%\\Packages\\<package-id>\\LocalCache\\Local\\JiraWidget\\jira-widget.log`
 - Common observed behavior in current environments:
   - `/rest/api/3` may return HTML/404 or redirects
   - `/rest/api/2` may still succeed
+- Progress logs include detailed included/excluded activities and included subtasks.
 
 ## Known Limitations
 
 - No background auto-refresh timer yet; issue data is fetched when an issue is added.
-- No persistent settings storage yet (URL/token/issue list are not persisted).
-- Progress logic is tailored to Jira setups that use `Activities` links and `Done` status naming.
+- Jira URL/token are not persisted across sessions.
+- Progress logic is tailored to Jira setups using `Activities` links and current naming conventions.
 - Behavior depends on Jira server/network/SSO configuration, especially for on-prem + Okta flows.
 
 ## Project Structure
@@ -74,12 +88,13 @@ This project is no longer a static UI prototype. It includes:
 - `JiraWidget/MainWindow.xaml` and `MainWindow.xaml.cs`: UI and app flow
 - `JiraWidget/JiraService.cs`: Jira authentication and API calls
 - `JiraWidget/JiraModels.cs`: JSON models
+- `JiraWidget/FavoritesStore.cs`: local favorites persistence
 - `JiraWidget/TrackedIssueViewModel.cs`: bindable tracked issue state
 - `JiraWidget/AppLogger.cs`: file logger
 
 ## Next Improvements
 
 - Add periodic refresh with configurable interval
-- Add persisted user settings
+- Persist additional user settings (Jira URL, opacity)
 - Add clearer per-issue API error states in UI
 - Add unit tests for parsing/progress logic
