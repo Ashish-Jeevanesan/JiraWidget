@@ -34,6 +34,21 @@ namespace JiraWidget
             set => SetProperty(ref _displayText, value);
         }
 
+        private bool _isLoading;
+        public bool IsLoading
+        {
+            get => _isLoading;
+            set
+            {
+                if (SetProperty(ref _isLoading, value))
+                {
+                    OnPropertyChanged(nameof(CanRetry));
+                }
+            }
+        }
+
+        public bool CanRetry => !IsLoading;
+
         public event PropertyChangedEventHandler? PropertyChanged;
 
         protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)

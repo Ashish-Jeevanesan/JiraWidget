@@ -21,17 +21,20 @@ namespace JiraWidget
         private Uri? _jiraBaseUri;
         private bool _oktaLoginInitialized;
         private bool _oktaLoginCompleted;
+        private bool _oktaLoginInProgress;
 
         public ObservableCollection<TrackedIssueViewModel> TrackedIssues { get; } = new();
 
         private const int LoginHeight = 240;
         private const int MainViewBaseHeight = 160;
-        private const int HeightPerIssue = 58;
+        private const int HeightPerIssue = 84;
         private const int MaxMainHeight = 640;
         private const int DefaultMainIssueSlots = 3;
         private const int MinWindowWidth = 340;
         private const int MaxWindowWidth = 520;
         private const int MaxTitleLength = 70;
+        private const int OktaCookieRetryAttempts = 3;
+        private const int OktaCookieRetryDelayMs = 700;
 
         public MainWindow()
         {
@@ -117,6 +120,8 @@ namespace JiraWidget
                 }
 
                 _jiraBaseUri = baseUri;
+                _oktaLoginCompleted = false;
+                _oktaLoginInProgress = false;
                 await EnsureOktaWebViewAsync();
                 OktaWebViewHost.Visibility = Visibility.Visible;
 
@@ -151,7 +156,7 @@ namespace JiraWidget
             {
                 IssueKey = issueKey,
                 DisplayText = issueKey,
-                StatusText = "Loading..."
+                StatusText = "Queued for loading..."
             };
 
             TrackedIssues.Add(newIssueViewModel);
@@ -165,6 +170,14 @@ namespace JiraWidget
 
         private async Task FetchIssueDetails(TrackedIssueViewModel issueViewModel)
         {
+            if (issueViewModel.IsLoading)
+            {
+                return;
+            }
+
+            issueViewModel.IsLoading = true;
+            issueViewModel.StatusText = "Loading issue details...";
+
             try
             {
                 var (issue, errorMessage) = await _jiraService.GetIssueAsync(issueViewModel.IssueKey);
@@ -183,22 +196,28 @@ namespace JiraWidget
                     issueViewModel.Progress = percentage;
                     issueViewModel.DisplayText = $"{issueViewModel.IssueKey} [{title}] ({percentage}%)";
                     issueViewModel.StatusText = $"{done}/{total} Done";
+                    AppLogger.Info($"Issue '{issueViewModel.IssueKey}' loaded successfully. Progress={percentage}%.");
                     AdjustWindowSize();
                 }
                 else
                 {
-                    issueViewModel.StatusText = "Error";
+                    var friendlyError = string.IsNullOrWhiteSpace(errorMessage) ? "Issue lookup failed." : errorMessage;
+                    issueViewModel.StatusText = $"Error: {friendlyError}";
                     issueViewModel.Progress = 0;
-                    issueViewModel.DisplayText = $"{issueViewModel.IssueKey} ({errorMessage ?? "Not Found"})";
+                    issueViewModel.DisplayText = issueViewModel.IssueKey;
                     AdjustWindowSize();
                 }
             }
             catch (Exception ex)
             {
                 AppLogger.Error($"Unhandled exception while loading '{issueViewModel.IssueKey}'.", ex);
-                issueViewModel.StatusText = "Error";
-                issueViewModel.DisplayText = $"{issueViewModel.IssueKey} (Exception - check log)";
+                issueViewModel.StatusText = "Error: Unexpected exception. Check logs.";
+                issueViewModel.DisplayText = issueViewModel.IssueKey;
                 AdjustWindowSize();
+            }
+            finally
+            {
+                issueViewModel.IsLoading = false;
             }
         }
 
@@ -212,11 +231,26 @@ namespace JiraWidget
             }
         }
 
+        private void RetryButton_Click(object sender, RoutedEventArgs e)
+        {
+            if ((sender as FrameworkElement)?.DataContext is TrackedIssueViewModel issueToRetry)
+            {
+                if (issueToRetry.IsLoading)
+                {
+                    return;
+                }
+
+                AppLogger.Info($"Retry requested for issue '{issueToRetry.IssueKey}'.");
+                _ = FetchIssueDetails(issueToRetry);
+            }
+        }
+
         private void LogoutButton_Click(object sender, RoutedEventArgs e)
         {
             _jiraService.Disconnect();
             TrackedIssues.Clear();
             _oktaLoginCompleted = false;
+            _oktaLoginInProgress = false;
             OktaWebViewHost.Visibility = Visibility.Collapsed;
             OktaWebView.Source = null;
 
@@ -347,6 +381,12 @@ namespace JiraWidget
                 return;
             }
 
+            if (_oktaLoginInProgress)
+            {
+                AppLogger.Info($"Okta login completion skipped (attempt already in progress). Trigger={trigger}");
+                return;
+            }
+
             if (_jiraBaseUri == null)
             {
                 await ShowErrorDialog("Missing Jira URL. Please enter the Jira URL and try again.");
@@ -361,11 +401,33 @@ namespace JiraWidget
 
             try
             {
+                _oktaLoginInProgress = true;
                 var currentUrl = OktaWebView.Source?.ToString() ?? "<null>";
                 AppLogger.Info($"Attempting Okta login completion. Trigger={trigger}, CurrentUrl='{currentUrl}'.");
 
-                var cookies = await OktaWebView.CoreWebView2.CookieManager.GetCookiesAsync(_jiraBaseUri.ToString());
-                AppLogger.Info($"Okta cookies retrieved. Count={cookies.Count}.");
+                IReadOnlyList<CoreWebView2Cookie>? cookies = null;
+                for (var attempt = 1; attempt <= OktaCookieRetryAttempts; attempt++)
+                {
+                    cookies = await OktaWebView.CoreWebView2.CookieManager.GetCookiesAsync(_jiraBaseUri.ToString());
+                    AppLogger.Info($"Okta cookies retrieved. Attempt={attempt}/{OktaCookieRetryAttempts}, Count={cookies.Count}.");
+
+                    if (HasRequiredSessionCookie(cookies))
+                    {
+                        break;
+                    }
+
+                    if (attempt < OktaCookieRetryAttempts)
+                    {
+                        await Task.Delay(OktaCookieRetryDelayMs);
+                    }
+                }
+
+                if (cookies == null || !HasRequiredSessionCookie(cookies))
+                {
+                    AppLogger.Info("Okta session cookie is not ready yet; keeping WebView open for retry.");
+                    await ShowErrorDialog("Login session is still being established. Please wait a few seconds and click Continue.");
+                    return;
+                }
 
                 foreach (var cookie in cookies)
                 {
@@ -409,6 +471,15 @@ namespace JiraWidget
                 AppLogger.Error("Unhandled exception while completing Okta login.", ex);
                 await ShowErrorDialog($"Unexpected error during Okta login. Check log: {AppLogger.LogPath}");
             }
+            finally
+            {
+                _oktaLoginInProgress = false;
+            }
+        }
+
+        private static bool HasRequiredSessionCookie(IEnumerable<CoreWebView2Cookie> cookies)
+        {
+            return cookies.Any(cookie => string.Equals(cookie.Name, "JSESSIONID", StringComparison.OrdinalIgnoreCase));
         }
     }
 }

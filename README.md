@@ -1,56 +1,85 @@
 # JiraWidget
 
-A proof-of-concept desktop widget for Windows that provides an 'always-on-top', at-a-glance view of a single Jira ticket's status.
+JiraWidget is a WinUI 3 desktop utility that stays on top of other windows and tracks progress for multiple Jira issues in a compact widget view.
 
-## 🚀 About
+## Overview
 
-This project is a UI/UX prototype for a lightweight, convenient desktop utility. The goal is to have a small, non-interactive window that always floats above other applications, allowing a user to constantly monitor the progress of a specific Jira ticket without needing to switch to a web browser.
+This project is no longer a static UI prototype. It includes:
+- Jira API integration through `HttpClient`
+- Login support for PAT (Bearer) and Okta browser-based session flow
+- Multi-issue tracking with per-issue progress bars
+- Dynamic resizing based on tracked issue count and content width
+- Local file logging for diagnostics
 
-The application window is configured to be:
-- Small (300x120 pixels)
-- Frameless (no title bar or borders)
-- Non-resizable
-- Always on top of other windows
+## Current Features
 
-**Note:** This is currently a visual prototype. The UI displays hardcoded placeholder data. There is no backend logic implemented to connect to the Jira API.
+- Always-on-top floating window with custom title bar controls
+- Login view and tracking view in a single window
+- Track multiple issue keys (`PC-12345` format validation)
+- Remove tracked issues individually
+- Jira API version fallback strategy (`/rest/api/3` then `/rest/api/2`)
+- Progress calculation based on linked issues:
+  - Link type: `Activities`
+  - Done state: linked issue status name equals `Done`
 
-## ✨ Features
+## Tech Stack
 
-- **Floating Widget:** Displays as a small overlay on your desktop.
-- **Visual Progress:** Includes a progress bar to represent ticket status.
-- **At-a-Glance Info:** Shows the Jira ticket ID.
+- C#
+- .NET 8 (`net8.0-windows10.0.19041.0`)
+- WinUI 3 (Windows App SDK)
+- MSIX packaging support
 
-## 💻 Tech Stack
+## Prerequisites
 
-- **Language:** C#
-- **UI Framework:** WinUI 3
-- **Platform:** .NET 8
-- **SDK:** Windows App SDK
-- **Packaging:** MSIX for modern Windows deployment
+- Windows 10/11 development environment
+- Visual Studio 2022 with Windows App SDK / WinUI workload
+- .NET 8 SDK
+- Windows SDK 10.0.19041.0 or newer
 
-## 🛠️ Prerequisites
+## Build and Run
 
-To build and run this project, you will need:
+1. Clone the repository.
+2. Open `JiraWidget.slnx` in Visual Studio.
+3. Restore NuGet packages.
+4. Build and run (`F5`).
 
-- **Visual Studio:** With the **.NET Multi-platform App UI development** workload installed.
-- **.NET 8.0 SDK**
-- **Windows SDK:** Version 10.0.19041.0 or higher.
+## Authentication Modes
 
-## ⚙️ Getting Started
+- PAT mode:
+  - Uses `Authorization: Bearer <token>`
+  - Validates with `/rest/api/{version}/myself`
+- Okta mode:
+  - Uses embedded WebView2 login
+  - Captures session cookies (`JSESSIONID`, `seraph.rememberme.cookie`, etc.)
+  - Reuses those cookies for Jira API calls
 
-1.  **Clone the repository.**
-2.  **Open the solution:** Open the `JiraWidget.sln` file in Visual Studio.
-3.  **Build the project:** Build the solution by pressing `Ctrl+Shift+B` or selecting `Build > Build Solution` from the menu.
-4.  **Run the application:** Press `F5` or click the Start button in Visual Studio to launch the widget.
+## Logging and Diagnostics
 
-## 📈 Future Development
+- Application logs are written to:
+  - `%LocalAppData%\\JiraWidget\\jira-widget.log`
+- The root folder may also contain a copied log (`jira-widget.log`) from development runs.
+- Common observed behavior in current environments:
+  - `/rest/api/3` may return HTML/404 or redirects
+  - `/rest/api/2` may still succeed
 
-To turn this prototype into a functional application, the following steps are needed:
+## Known Limitations
 
-1.  **Jira API Integration:** Implement a service to connect to the Jira REST API using `HttpClient` or a dedicated client library.
-2.  **Configuration:** Create a settings panel or configuration file where the user can input:
-    - Their Jira instance URL.
-    - An API token for authentication.
-    - The specific Jira ticket ID to monitor.
-3.  **Data Binding:** Replace the hardcoded values in `MainWindow.xaml` with data bindings to a view model that holds the live data from the API.
-4.  **Auto-Refresh:** Implement a timer to periodically fetch the latest ticket status from the Jira API.
+- No background auto-refresh timer yet; issue data is fetched when an issue is added.
+- No persistent settings storage yet (URL/token/issue list are not persisted).
+- Progress logic is tailored to Jira setups that use `Activities` links and `Done` status naming.
+- Behavior depends on Jira server/network/SSO configuration, especially for on-prem + Okta flows.
+
+## Project Structure
+
+- `JiraWidget/MainWindow.xaml` and `MainWindow.xaml.cs`: UI and app flow
+- `JiraWidget/JiraService.cs`: Jira authentication and API calls
+- `JiraWidget/JiraModels.cs`: JSON models
+- `JiraWidget/TrackedIssueViewModel.cs`: bindable tracked issue state
+- `JiraWidget/AppLogger.cs`: file logger
+
+## Next Improvements
+
+- Add periodic refresh with configurable interval
+- Add persisted user settings
+- Add clearer per-issue API error states in UI
+- Add unit tests for parsing/progress logic

@@ -17,6 +17,11 @@
                 <Setter Property="Width" Value="32"/>
                 <Setter Property="Height" Value="32"/>
             </Style>
+            <Style x:Key="IssueActionButtonStyle" TargetType="Button">
+                <Setter Property="MinWidth" Value="56"/>
+                <Setter Property="Height" Value="24"/>
+                <Setter Property="Padding" Value="8,0"/>
+            </Style>
         </Border.Resources>
         <Grid>
             <Grid.RowDefinitions>
@@ -85,8 +90,12 @@
                                         <StackPanel Grid.Column="0">
                                             <TextBlock Text="{x:Bind DisplayText, Mode=OneWay}" FontWeight="SemiBold"/>
                                             <ProgressBar Value="{x:Bind Progress, Mode=OneWay}" Margin="0,4,0,0"/>
+                                            <TextBlock Text="{x:Bind StatusText, Mode=OneWay}" Margin="0,4,0,0" Opacity="0.8" TextWrapping="WrapWholeWords"/>
                                         </StackPanel>
-                                        <Button x:Name="RemoveButton" Content="X" Grid.Column="1" Click="RemoveButton_Click" VerticalAlignment="Center" Margin="10,0,0,0" Style="{StaticResource TitleBarButtonStyle}"/>
+                                        <StackPanel Grid.Column="1" Margin="10,0,0,0" Spacing="6" VerticalAlignment="Center">
+                                            <Button x:Name="RetryButton" Content="Retry" Click="RetryButton_Click" Style="{StaticResource IssueActionButtonStyle}" IsEnabled="{x:Bind CanRetry, Mode=OneWay}"/>
+                                            <Button x:Name="RemoveButton" Content="X" Click="RemoveButton_Click" Style="{StaticResource TitleBarButtonStyle}"/>
+                                        </StackPanel>
                                     </Grid>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>

@@ -12,6 +12,7 @@ namespace JiraWidget
     public class JiraService
     {
         private static HttpClient? _httpClient;
+        private string? _preferredApiVersion;
 
         public (bool isConfigured, string? errorMessage) SetupClient(string baseUrl, string pat)
         {
@@ -27,8 +28,8 @@ namespace JiraWidget
                 _httpClient.DefaultRequestHeaders.Accept.Clear();
                 _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", pat.Trim());
+                _preferredApiVersion = null;
 
-                AppLogger.Info($"Configured Jira client for '{baseUrl}' with auto-redirect disabled.");
                 AppLogger.Info($"Configured Jira client for '{baseUrl}'.");
                 return (true, null);
             }
@@ -73,6 +74,7 @@ namespace JiraWidget
                 _httpClient.BaseAddress = baseUri;
                 _httpClient.DefaultRequestHeaders.Accept.Clear();
                 _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                _preferredApiVersion = null;
 
                 AppLogger.Info($"Configured Jira client for '{baseUrl}' using session cookies.");
                 return (true, null);
@@ -93,20 +95,28 @@ namespace JiraWidget
 
             try
             {
-                var (okV3, errorV3) = await TryValidateConnectionAsync("3");
-                if (okV3)
+                var firstVersion = _preferredApiVersion ?? "3";
+                var secondVersion = firstVersion == "3" ? "2" : "3";
+
+                var (okFirst, errorFirst) = await TryValidateConnectionAsync(firstVersion);
+                if (okFirst)
                 {
+                    _preferredApiVersion = firstVersion;
                     return (true, null);
                 }
 
-                AppLogger.Info($"API v3 connection validation failed. Trying v2. Reason: {errorV3}");
-                var (okV2, errorV2) = await TryValidateConnectionAsync("2");
-                if (okV2)
+                AppLogger.Info($"API v{firstVersion} connection validation failed. Trying v{secondVersion}. Reason: {errorFirst}");
+                var (okSecond, errorSecond) = await TryValidateConnectionAsync(secondVersion);
+                if (okSecond)
                 {
+                    _preferredApiVersion = secondVersion;
+                    AppLogger.Info($"Using Jira API v{secondVersion} for this session.");
                     return (true, null);
                 }
 
-                return (false, errorV2 ?? errorV3 ?? "Connection validation failed.");
+                var finalError = errorSecond ?? errorFirst ?? "Connection validation failed.";
+                AppLogger.Error($"Jira connection validation failed for both API versions. Last error: {finalError}");
+                return (false, finalError);
             }
             catch (Exception ex)
             {
@@ -127,12 +137,10 @@ namespace JiraWidget
             if (IsRedirect(response))
             {
                 var location = response.Headers.Location?.ToString() ?? "<unknown>";
-                AppLogger.Error($"Connection validation redirected (api/{apiVersion}). Status={(int)response.StatusCode}, Location={location}");
                 return (false, "Authentication was redirected to a login page (likely Okta/SSO). API token-based access is not valid for this flow.");
             }
 
             var error = await BuildErrorMessageAsync(response);
-            AppLogger.Error($"Jira connection validation failed (api/{apiVersion}): {error}");
             return (false, error);
         }
 
@@ -143,15 +151,28 @@ namespace JiraWidget
                 return (null, "Not connected.");
             }
 
-            var (issue, errorV3) = await GetIssueForApiVersionAsync(issueKey, "3");
+            var firstVersion = _preferredApiVersion ?? "3";
+            var secondVersion = firstVersion == "3" ? "2" : "3";
+
+            var (issue, firstError) = await GetIssueForApiVersionAsync(issueKey, firstVersion);
             if (issue != null)
             {
+                _preferredApiVersion = firstVersion;
                 return (issue, null);
             }
 
-            AppLogger.Info($"API v3 issue lookup failed for '{issueKey}'. Trying v2. Reason: {errorV3}");
-            var (issueV2, errorV2) = await GetIssueForApiVersionAsync(issueKey, "2");
-            return issueV2 != null ? (issueV2, null) : (null, errorV2 ?? errorV3);
+            AppLogger.Info($"API v{firstVersion} issue lookup failed for '{issueKey}'. Trying v{secondVersion}. Reason: {firstError}");
+            var (fallbackIssue, secondError) = await GetIssueForApiVersionAsync(issueKey, secondVersion);
+            if (fallbackIssue != null)
+            {
+                _preferredApiVersion = secondVersion;
+                AppLogger.Info($"Issue lookup for '{issueKey}' succeeded on fallback API v{secondVersion}. Using it for this session.");
+                return (fallbackIssue, null);
+            }
+
+            var finalError = secondError ?? firstError;
+            AppLogger.Error($"Issue lookup failed for '{issueKey}' on both API versions. Last error: {finalError}");
+            return (null, finalError);
         }
 
         private async Task<(JiraIssue? issue, string? errorMessage)> GetIssueForApiVersionAsync(string issueKey, string apiVersion)
@@ -163,8 +184,6 @@ namespace JiraWidget
 
                 if (IsRedirect(response))
                 {
-                    var location = response.Headers.Location?.ToString() ?? "<unknown>";
-                    AppLogger.Error($"Issue lookup redirected for '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, Location={location}");
                     return (null, "Request was redirected to a login page (Okta/SSO). This Jira endpoint requires session/OAuth auth rather than the current token.");
                 }
 
@@ -176,8 +195,7 @@ namespace JiraWidget
                     {
                         var snippet = GetSnippet(body);
                         var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
-                        AppLogger.Error($"Non-JSON success response for issue '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
-                        AppLogger.Error($"Non-JSON success response for issue '{issueKey}'. Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
+                        AppLogger.Info($"Non-JSON success response for issue '{issueKey}' (api/{apiVersion}). Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={snippet}");
                         return (null, "Received non-JSON response from Jira (likely SSO/permission HTML page). Please verify Jira API access for this issue.");
                     }
 
@@ -189,20 +207,17 @@ namespace JiraWidget
                     catch (JsonException ex)
                     {
                         AppLogger.Error($"Failed to parse Jira issue response for '{issueKey}' (api/{apiVersion}). Snippet={GetSnippet(body)}", ex);
-                        AppLogger.Error($"Failed to parse Jira issue response for '{issueKey}'. Snippet={GetSnippet(body)}", ex);
                         return (null, "Jira returned an unexpected response format.");
                     }
                 }
 
                 var error = await BuildErrorMessageAsync(response);
-                AppLogger.Error($"Issue lookup failed for '{issueKey}' (api/{apiVersion}): {error}");
-                AppLogger.Error($"Issue lookup failed for '{issueKey}': {error}");
+                AppLogger.Info($"Issue lookup failed for '{issueKey}' (api/{apiVersion}): {error}");
                 return (null, error);
             }
             catch (Exception ex)
             {
                 AppLogger.Error($"Exception while fetching issue '{issueKey}' (api/{apiVersion}).", ex);
-                AppLogger.Error($"Exception while fetching issue '{issueKey}'.", ex);
                 return (null, $"Exception: {ex.Message}");
             }
         }
@@ -215,7 +230,7 @@ namespace JiraWidget
                 if (!LooksLikeJson(response, body))
                 {
                     var contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
-                    AppLogger.Error($"Non-JSON error response. Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={GetSnippet(body)}");
+                    AppLogger.Info($"Non-JSON error response. Status={(int)response.StatusCode}, ContentType={contentType}, Snippet={GetSnippet(body)}");
                     return $"{(int)response.StatusCode}: Jira returned an HTML/non-JSON response (possible SSO redirect or access page).";
                 }
 
@@ -297,6 +312,7 @@ namespace JiraWidget
         {
             _httpClient?.Dispose();
             _httpClient = null;
+            _preferredApiVersion = null;
             AppLogger.Info("Disconnected Jira client.");
         }
     }
