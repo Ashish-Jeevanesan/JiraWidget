@@ -53,3 +53,4 @@ This log will be updated as development continues.
 ## Recent Updates:
 
 -   **2026-02-20:** Added a shared `ValidateAndEnterMainViewAsync` helper to consolidate login flow validation, and fixed the main view default size so the widget opens at the 3-item height before any issues are tracked.
+codex resume 019c7c93-387c-7d33-b68e-8f30351b1a83

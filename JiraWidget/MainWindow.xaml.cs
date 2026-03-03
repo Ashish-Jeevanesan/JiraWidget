@@ -31,6 +31,7 @@ namespace JiraWidget
         private const int DefaultMainIssueSlots = 3;
         private const int MinWindowWidth = 340;
         private const int MaxWindowWidth = 520;
+        private const int MaxTitleLength = 70;
 
         public MainWindow()
         {
@@ -177,10 +178,11 @@ namespace JiraWidget
                     var total = activityLinks?.Count ?? 0;
                     var done = activityLinks?.Count(link => link.OutwardIssue!.Fields!.Status!.Name == "Done") ?? 0;
                     var percentage = (total == 0) ? 0 : (int)((double)done / total * 100);
+                    var title = BuildDisplayTitle(issue.Fields?.Summary);
 
                     issueViewModel.Progress = percentage;
-                    issueViewModel.DisplayText = $"{issueViewModel.IssueKey} ({done}/{total} Done)";
-                    issueViewModel.StatusText = "Loaded";
+                    issueViewModel.DisplayText = $"{issueViewModel.IssueKey} [{title}] ({percentage}%)";
+                    issueViewModel.StatusText = $"{done}/{total} Done";
                     AdjustWindowSize();
                 }
                 else
@@ -238,10 +240,13 @@ namespace JiraWidget
                 .DefaultIfEmpty(0)
                 .Max();
 
-            var contentWidth = MinWindowWidth + (longestDisplayLength * 3);
-            var boundedWidth = Math.Clamp(contentWidth, MinWindowWidth, MaxWindowWidth);
+            var contentWidth = MinWindowWidth + (longestDisplayLength * 6);
+            if (contentWidth < MinWindowWidth)
+            {
+                contentWidth = MinWindowWidth;
+            }
 
-            _appWindow.Resize(new Windows.Graphics.SizeInt32(boundedWidth, newHeight));
+            _appWindow.Resize(new Windows.Graphics.SizeInt32(contentWidth, newHeight));
         }
 
         private async Task ShowErrorDialog(string message)
@@ -254,6 +259,22 @@ namespace JiraWidget
                 XamlRoot = Content.XamlRoot
             };
             await dialog.ShowAsync();
+        }
+
+        private static string BuildDisplayTitle(string? summary)
+        {
+            if (string.IsNullOrWhiteSpace(summary))
+            {
+                return "No Title";
+            }
+
+            var trimmed = summary.Trim();
+            if (trimmed.Length <= MaxTitleLength)
+            {
+                return trimmed;
+            }
+
+            return trimmed[..(MaxTitleLength - 3)].TrimEnd() + "...";
         }
 
         private async Task<bool> ValidateAndEnterMainViewAsync(string defaultErrorMessage)
