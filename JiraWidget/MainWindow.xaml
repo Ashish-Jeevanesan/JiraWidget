@@ -32,6 +32,24 @@
             <!-- Draggable Title Bar Area -->
             <Grid x:Name="DragArea" Grid.Row="0">
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+                    <Button x:Name="MenuButton" Content="☰" Click="MenuButton_Click" Style="{StaticResource TitleBarButtonStyle}">
+                        <FlyoutBase.AttachedFlyout>
+                            <Flyout Placement="BottomEdgeAlignedRight">
+                                <StackPanel Width="220" Spacing="8" Padding="8">
+                                    <TextBlock Text="Widget Opacity" FontWeight="SemiBold"/>
+                                    <Slider x:Name="OpacitySlider"
+                                            Minimum="35"
+                                            Maximum="100"
+                                            Value="100"
+                                            StepFrequency="5"
+                                            SmallChange="1"
+                                            LargeChange="5"
+                                            ValueChanged="OpacitySlider_ValueChanged"/>
+                                    <TextBlock x:Name="OpacityValueText" Text="100%"/>
+                                </StackPanel>
+                            </Flyout>
+                        </FlyoutBase.AttachedFlyout>
+                    </Button>
                     <Button x:Name="MinimizeButton" Content="-" Click="MinimizeButton_Click" Style="{StaticResource TitleBarButtonStyle}"/>
                     <Button x:Name="CloseButton" Content="X" Click="CloseButton_Click" Style="{StaticResource TitleBarButtonStyle}"/>
                 </StackPanel>
@@ -73,7 +91,7 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBox x:Name="IssueKeyTextBox" Grid.Column="0" PlaceholderText="Enter Issue Key (e.g., PC-12345)"/>
+                        <TextBox x:Name="IssueKeyTextBox" Grid.Column="0" PlaceholderText="Enter Issue Key (e.g., PC-12345)" KeyDown="IssueKeyTextBox_KeyDown"/>
                         <Button x:Name="TrackButton" Grid.Column="1" Content="Track" Click="TrackButton_Click" Margin="5,0,0,0"/>
                     </Grid>
 

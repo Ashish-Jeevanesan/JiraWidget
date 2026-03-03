@@ -1,11 +1,14 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.Web.WebView2.Core;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
@@ -17,6 +20,7 @@ namespace JiraWidget
     public sealed partial class MainWindow : Window
     {
         private readonly AppWindow _appWindow;
+        private readonly IntPtr _hwnd;
         private readonly JiraService _jiraService;
         private Uri? _jiraBaseUri;
         private bool _oktaLoginInitialized;
@@ -35,6 +39,12 @@ namespace JiraWidget
         private const int MaxTitleLength = 70;
         private const int OktaCookieRetryAttempts = 3;
         private const int OktaCookieRetryDelayMs = 700;
+        private const double MinAppOpacity = 0.35;
+        private const double MaxAppOpacity = 1.0;
+        private const double DefaultAppOpacity = 1.0;
+        private const int GwlExStyle = -20;
+        private const int WsExLayered = 0x00080000;
+        private const uint LwaAlpha = 0x00000002;
 
         public MainWindow()
         {
@@ -42,8 +52,8 @@ namespace JiraWidget
             ExtendsContentIntoTitleBar = true;
             SetTitleBar(DragArea);
 
-            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-            var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
+            _hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(_hwnd);
             _appWindow = AppWindow.GetFromWindowId(windowId);
             _appWindow.Title = "JiraWidget";
 
@@ -60,6 +70,7 @@ namespace JiraWidget
 
             JiraUrlTextBox.Text = "https://jira.globusmedical.com/";
             PatTextBox.Text = "";
+            ApplyWindowOpacity(DefaultAppOpacity);
 
             AppLogger.Info("Main window initialized.");
         }
@@ -70,6 +81,17 @@ namespace JiraWidget
             {
                 ((OverlappedPresenter)_appWindow.Presenter).Minimize();
             }
+        }
+
+        private void MenuButton_Click(object sender, RoutedEventArgs e)
+        {
+            FlyoutBase.ShowAttachedFlyout((FrameworkElement)sender);
+        }
+
+        private void OpacitySlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+        {
+            var sliderPercent = e.NewValue / 100d;
+            ApplyAppOpacity(sliderPercent);
         }
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -166,6 +188,15 @@ namespace JiraWidget
 
             IssueKeyTextBox.Text = "";
             AppLogger.Info($"Added issue '{issueKey}' to tracked list.");
+        }
+
+        private void IssueKeyTextBox_KeyDown(object sender, KeyRoutedEventArgs e)
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter)
+            {
+                e.Handled = true;
+                TrackButton_Click(TrackButton, new RoutedEventArgs());
+            }
         }
 
         private async Task FetchIssueDetails(TrackedIssueViewModel issueViewModel)
@@ -481,5 +512,43 @@ namespace JiraWidget
         {
             return cookies.Any(cookie => string.Equals(cookie.Name, "JSESSIONID", StringComparison.OrdinalIgnoreCase));
         }
+
+        private void ApplyAppOpacity(double opacity)
+        {
+            var clamped = Math.Clamp(opacity, MinAppOpacity, MaxAppOpacity);
+            ApplyWindowOpacity(clamped);
+
+            var percent = (int)Math.Round(clamped * 100, MidpointRounding.AwayFromZero);
+            if (OpacityValueText != null)
+            {
+                OpacityValueText.Text = $"{percent}%";
+            }
+        }
+
+        private void ApplyWindowOpacity(double opacity)
+        {
+            if (_hwnd == IntPtr.Zero)
+            {
+                return;
+            }
+
+            var exStyle = GetWindowLong(_hwnd, GwlExStyle);
+            if ((exStyle & WsExLayered) == 0)
+            {
+                SetWindowLong(_hwnd, GwlExStyle, exStyle | WsExLayered);
+            }
+
+            var alpha = (byte)Math.Round(Math.Clamp(opacity, MinAppOpacity, MaxAppOpacity) * 255, MidpointRounding.AwayFromZero);
+            _ = SetLayeredWindowAttributes(_hwnd, 0, alpha, LwaAlpha);
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
     }
 }
